@@ -1,0 +1,770 @@
+//@version=5
+indicator("LEX-Q Harmonic Pro v6.0", shorttitle="LEX-Q HP v6", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ╔══════════════════════════════════════════════════════════════════════════════╗
+// ║                    LEX-Q HARMONIC PATTERN INDICATOR v6.0                     ║
+// ║              Professional Edition - Scott Carney Methodology                 ║
+// ║                                                                              ║
+// ║  FEATURES:                                                                   ║
+// ║  • Major Pivots Only (Depth 24, 36, 48) - No minor noise                    ║
+// ║  • Survival of the Fittest - Best pattern wins in overlap zones            ║
+// ║  • Scott Carney PRZ Style - Clean dotted lines with ratios                 ║
+// ║  • RSI Confirmation Filter - D point requires RSI/Divergence               ║
+// ║  • No Repainting - barstate.isconfirmed on all signals                     ║
+// ╚══════════════════════════════════════════════════════════════════════════════╝
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              المدخلات (INPUTS)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+string grp1 = "══════ Pattern Selection ══════"
+bool enableGartley = input.bool(true, "Gartley", group=grp1, inline="p1")
+bool enableBat = input.bool(true, "Bat", group=grp1, inline="p1")
+bool enableButterfly = input.bool(true, "Butterfly", group=grp1, inline="p2")
+bool enableCrab = input.bool(true, "Crab", group=grp1, inline="p2")
+bool enableShark = input.bool(true, "Shark", group=grp1, inline="p3")
+bool enableCypher = input.bool(true, "Cypher", group=grp1, inline="p3")
+bool enableABCD = input.bool(true, "AB=CD", group=grp1, inline="p4")
+
+string grp2 = "══════ Direction Filter ══════"
+bool showBullish = input.bool(true, "Bullish", group=grp2, inline="dir")
+bool showBearish = input.bool(true, "Bearish", group=grp2, inline="dir")
+
+string grp3 = "══════ Major Pivots Filter ══════"
+float minAccuracy = input.float(90.0, "Min Pattern Accuracy %", minval=70.0, maxval=99.0, step=1.0, group=grp3, tooltip="Scott Carney strict ratios - Only patterns above this threshold")
+int pivotConfirmBars = input.int(3, "Pivot Confirmation Bars", minval=1, maxval=10, group=grp3, tooltip="Number of bars to confirm pivot reversal")
+string depthMode = input.string("Major Only (24,36,48)", "Depth Mode", options=["Major Only (24,36,48)", "All Depths (6-48)"], group=grp3, tooltip="Major pivots = more reliable patterns")
+
+string grp4 = "══════ RSI Confirmation ══════"
+bool useRSIFilter = input.bool(true, "Require RSI Confirmation for D", group=grp4, tooltip="D point must have RSI oversold/overbought")
+int rsiLength = input.int(14, "RSI Length", minval=5, maxval=30, group=grp4)
+int rsiOverbought = input.int(70, "RSI Overbought", minval=60, maxval=90, group=grp4)
+int rsiOversold = input.int(30, "RSI Oversold", minval=10, maxval=40, group=grp4)
+bool requireDivergence = input.bool(false, "Require Divergence", group=grp4, tooltip="Also require RSI divergence")
+
+string grp5 = "══════ Visual Settings ══════"
+bool showPRZLevels = input.bool(true, "Show PRZ Levels (Scott Carney Style)", group=grp5)
+bool showTargets = input.bool(true, "Show Targets (T1, T2)", group=grp5)
+bool showStopLoss = input.bool(true, "Show Stop Loss", group=grp5)
+bool showRatioLabels = input.bool(true, "Show Ratio Labels on Pattern", group=grp5)
+string watermarkName = input.string("LEX-Q", "Watermark Name", group=grp5)
+int przLength = input.int(10, "PRZ Line Length (bars)", minval=5, maxval=50, group=grp5, tooltip="Length of PRZ horizontal lines in bars")
+
+string grp6 = "══════ Colors ══════"
+// Updated colors: Neon Cyan/Teal for Bullish, Soft Red for Bearish
+color bullColor = input.color(color.new(#00E5FF, 0), "Bullish Color (Cyan/Teal)", group=grp6)
+color bearColor = input.color(color.new(#FF5252, 0), "Bearish Color (Soft Red)", group=grp6)
+color przColor = input.color(color.new(#9C27B0, 0), "PRZ Color", group=grp6)
+color targetColor = input.color(color.new(#4CAF50, 0), "Target Color", group=grp6)
+color slColor = input.color(color.new(#F44336, 0), "Stop Loss Color", group=grp6)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                         RSI CALCULATION & DIVERGENCE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+float rsiValue = ta.rsi(close, rsiLength)
+bool rsiOB = rsiValue >= rsiOverbought
+bool rsiOS = rsiValue <= rsiOversold
+
+// RSI Divergence Detection - Confirmed bars only
+float rsiPivotHi = ta.pivothigh(rsiValue, 5, 5)
+float rsiPivotLo = ta.pivotlow(rsiValue, 5, 5)
+float pricePivotHi = ta.pivothigh(high, 5, 5)
+float pricePivotLo = ta.pivotlow(low, 5, 5)
+
+var float lastRsiHi = na
+var float lastPriceHi = na
+var float lastRsiLo = na
+var float lastPriceLo = na
+var int lastRsiHiBar = 0
+var int lastRsiLoBar = 0
+
+if barstate.isconfirmed
+    if not na(rsiPivotHi) and not na(pricePivotHi)
+        lastRsiHi := rsiPivotHi
+        lastPriceHi := pricePivotHi
+        lastRsiHiBar := bar_index - 5
+
+    if not na(rsiPivotLo) and not na(pricePivotLo)
+        lastRsiLo := rsiPivotLo
+        lastPriceLo := pricePivotLo
+        lastRsiLoBar := bar_index - 5
+
+// Divergence: confirmed historical data only
+bool bearishDiv = barstate.isconfirmed and not na(lastRsiHi) and not na(lastPriceHi) and (bar_index - lastRsiHiBar) <= 50 and high[1] > lastPriceHi and rsiValue[1] < lastRsiHi
+bool bullishDiv = barstate.isconfirmed and not na(lastRsiLo) and not na(lastPriceLo) and (bar_index - lastRsiLoBar) <= 50 and low[1] < lastPriceLo and rsiValue[1] > lastRsiLo
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    SCOTT CARNEY STRICT RATIO SCORING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Calculate error from exact target
+calcRatioError(float actual, float target) =>
+    math.abs(actual - target) / target * 100.0
+
+// Calculate error from range
+calcRangeError(float actual, float minVal, float maxVal) =>
+    float mid = (minVal + maxVal) / 2.0
+    float halfRange = (maxVal - minVal) / 2.0
+    float dist = math.abs(actual - mid)
+    dist > halfRange ? (dist - halfRange) / mid * 100.0 : 0.0
+
+// Scott Carney Pattern Scoring - Strict methodology
+calcPatternScore(string patternName, float xab, float abc, float bcd, float xad) =>
+    float totalError = 0.0
+    int checks = 0
+
+    if patternName == "GARTLEY"
+        totalError := calcRatioError(xab, 0.618) + calcRangeError(abc, 0.382, 0.886) + calcRatioError(xad, 0.786)
+        checks := 3
+    else if patternName == "BAT"
+        totalError := calcRangeError(xab, 0.382, 0.5) + calcRangeError(abc, 0.382, 0.886) + calcRatioError(xad, 0.886)
+        checks := 3
+    else if patternName == "BUTTERFLY"
+        totalError := calcRatioError(xab, 0.786) + calcRangeError(abc, 0.382, 0.886) + calcRangeError(xad, 1.27, 1.618)
+        checks := 3
+    else if patternName == "CRAB"
+        totalError := calcRangeError(xab, 0.382, 0.618) + calcRangeError(abc, 0.382, 0.886) + calcRatioError(xad, 1.618)
+        checks := 3
+    else if patternName == "SHARK"
+        totalError := calcRangeError(xab, 0.382, 0.618) + calcRangeError(abc, 1.13, 1.618) + calcRangeError(xad, 0.886, 1.13)
+        checks := 3
+    else if patternName == "CYPHER"
+        totalError := calcRangeError(xab, 0.382, 0.618) + calcRangeError(abc, 1.13, 1.414)
+        checks := 2
+    else if patternName == "AB=CD"
+        totalError := calcRangeError(abc, 0.382, 0.886) + calcRangeError(bcd, 1.0, 1.618)
+        checks := 2
+
+    float avgError = checks > 0 ? totalError / checks : 100.0
+    float score = math.max(0.0, 100.0 - avgError * 5.0)
+    score
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                         PATTERN DETECTION FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+isGartley(float xab, float abc, float xad, float tol) =>
+    enableGartley and math.abs(xab - 0.618) <= tol and abc >= 0.382 - tol and abc <= 0.886 + tol and math.abs(xad - 0.786) <= tol
+
+isBat(float xab, float abc, float xad, float tol) =>
+    enableBat and xab >= 0.382 - tol and xab <= 0.5 + tol and abc >= 0.382 - tol and abc <= 0.886 + tol and math.abs(xad - 0.886) <= tol
+
+isButterfly(float xab, float abc, float xad, float tol) =>
+    enableButterfly and math.abs(xab - 0.786) <= tol and abc >= 0.382 - tol and abc <= 0.886 + tol and xad >= 1.27 - tol and xad <= 1.618 + tol
+
+isCrab(float xab, float abc, float xad, float tol) =>
+    enableCrab and xab >= 0.382 - tol and xab <= 0.618 + tol and abc >= 0.382 - tol and abc <= 0.886 + tol and math.abs(xad - 1.618) <= tol * 1.5
+
+isShark(float xab, float abc, float xad, float tol) =>
+    enableShark and xab >= 0.382 - tol and xab <= 0.618 + tol and abc >= 1.13 - tol and abc <= 1.618 + tol and xad >= 0.886 - tol and xad <= 1.13 + tol
+
+isCypher(float xab, float abc, float xcd, float tol) =>
+    enableCypher and xab >= 0.382 - tol and xab <= 0.618 + tol and math.abs(xcd - 0.786) <= tol
+
+isABCD(float abc, float cdab, float tol) =>
+    enableABCD and abc >= 0.382 - tol and abc <= 0.886 + tol and cdab >= 1.0 - tol and cdab <= 1.618 + tol
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    MAJOR PIVOTS ZIGZAG (24, 36, 48 DEPTH)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Arrays for major depths only (or all if selected)
+// Depth 6 (minor - optional)
+var float[] prices6 = array.new_float(6, na)
+var int[] bars6 = array.new_int(6, 0)
+var int[] dirs6 = array.new_int(6, 0)
+
+// Depth 12 (minor - optional)
+var float[] prices12 = array.new_float(6, na)
+var int[] bars12 = array.new_int(6, 0)
+var int[] dirs12 = array.new_int(6, 0)
+
+// Depth 24 (MAJOR)
+var float[] prices24 = array.new_float(6, na)
+var int[] bars24 = array.new_int(6, 0)
+var int[] dirs24 = array.new_int(6, 0)
+
+// Depth 36 (MAJOR)
+var float[] prices36 = array.new_float(6, na)
+var int[] bars36 = array.new_int(6, 0)
+var int[] dirs36 = array.new_int(6, 0)
+
+// Depth 48 (MAJOR)
+var float[] prices48 = array.new_float(6, na)
+var int[] bars48 = array.new_int(6, 0)
+var int[] dirs48 = array.new_int(6, 0)
+
+// Pivot detection - ta.pivothigh/low inherently looks back
+float pivHi6 = ta.pivothigh(high, 6, 6)
+float pivLo6 = ta.pivotlow(low, 6, 6)
+float pivHi12 = ta.pivothigh(high, 12, 12)
+float pivLo12 = ta.pivotlow(low, 12, 12)
+float pivHi24 = ta.pivothigh(high, 24, 24)
+float pivLo24 = ta.pivotlow(low, 24, 24)
+float pivHi36 = ta.pivothigh(high, 36, 36)
+float pivLo36 = ta.pivotlow(low, 36, 36)
+float pivHi48 = ta.pivothigh(high, 48, 48)
+float pivLo48 = ta.pivotlow(low, 48, 48)
+
+// ZigZag Update - CONFIRMED BARS ONLY (No Repainting)
+updateZigZag(float[] prices, int[] bars, int[] dirs, float pivHi, float pivLo, int depth, int confirmBars) =>
+    int pivBar = bar_index - depth
+    bool updated = false
+
+    // Additional confirmation: pivot must be confirmed by X bars
+    bool hiConfirmed = not na(pivHi) and (bar_index - pivBar) >= confirmBars
+    bool loConfirmed = not na(pivLo) and (bar_index - pivBar) >= confirmBars
+
+    if barstate.isconfirmed
+        if hiConfirmed
+            int lastDir = nz(array.get(dirs, 0), 0)
+            float lastP = array.get(prices, 0)
+            if na(lastP) or lastDir == -1
+                for i = 5 to 1
+                    array.set(prices, i, array.get(prices, i - 1))
+                    array.set(bars, i, array.get(bars, i - 1))
+                    array.set(dirs, i, array.get(dirs, i - 1))
+                array.set(prices, 0, pivHi)
+                array.set(bars, 0, pivBar)
+                array.set(dirs, 0, 1)
+                updated := true
+            else if lastDir == 1 and pivHi > lastP
+                array.set(prices, 0, pivHi)
+                array.set(bars, 0, pivBar)
+                updated := true
+
+        if loConfirmed
+            int lastDir = nz(array.get(dirs, 0), 0)
+            float lastP = array.get(prices, 0)
+            if na(lastP) or lastDir == 1
+                for i = 5 to 1
+                    array.set(prices, i, array.get(prices, i - 1))
+                    array.set(bars, i, array.get(bars, i - 1))
+                    array.set(dirs, i, array.get(dirs, i - 1))
+                array.set(prices, 0, pivLo)
+                array.set(bars, 0, pivBar)
+                array.set(dirs, 0, -1)
+                updated := true
+            else if lastDir == -1 and pivLo < lastP
+                array.set(prices, 0, pivLo)
+                array.set(bars, 0, pivBar)
+                updated := true
+
+    updated
+
+// Update ZigZag for all depths
+bool useMajorOnly = depthMode == "Major Only (24,36,48)"
+
+if not useMajorOnly
+    updateZigZag(prices6, bars6, dirs6, pivHi6, pivLo6, 6, pivotConfirmBars)
+    updateZigZag(prices12, bars12, dirs12, pivHi12, pivLo12, 12, pivotConfirmBars)
+
+// Always update major depths
+updateZigZag(prices24, bars24, dirs24, pivHi24, pivLo24, 24, pivotConfirmBars)
+updateZigZag(prices36, bars36, dirs36, pivHi36, pivLo36, 36, pivotConfirmBars)
+updateZigZag(prices48, bars48, dirs48, pivHi48, pivLo48, 48, pivotConfirmBars)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                         PATTERN ANALYSIS ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+analyzePattern(float[] prices, int[] bars, int depth, bool rsiOversoldState, bool rsiOverboughtState, bool bullDiv, bool bearDiv) =>
+    float pX = nz(array.get(prices, 4), 0.0)
+    float pA = nz(array.get(prices, 3), 0.0)
+    float pB = nz(array.get(prices, 2), 0.0)
+    float pC = nz(array.get(prices, 1), 0.0)
+    float pD = nz(array.get(prices, 0), 0.0)
+
+    int bX = nz(array.get(bars, 4), 0)
+    int bA = nz(array.get(bars, 3), 0)
+    int bB = nz(array.get(bars, 2), 0)
+    int bC = nz(array.get(bars, 1), 0)
+    int bD = nz(array.get(bars, 0), 0)
+
+    bool valid = pX > 0 and pA > 0 and pB > 0 and pC > 0 and pD > 0
+    valid := valid and bX > 0 and bA > 0 and bB > 0 and bC > 0 and bD > 0
+
+    float legXA = math.abs(pA - pX)
+    float legAB = math.abs(pB - pA)
+    float legBC = math.abs(pC - pB)
+    float legCD = math.abs(pD - pC)
+    float legAD = math.abs(pD - pA)
+    float legXC = math.abs(pC - pX)
+
+    float xab = legXA > 0 ? legAB / legXA : 0.0
+    float abc = legAB > 0 ? legBC / legAB : 0.0
+    float bcd = legBC > 0 ? legCD / legBC : 0.0
+    float xad = legXA > 0 ? legAD / legXA : 0.0
+    float xcd = legXC > 0 ? legCD / legXC : 0.0
+    float cdab = legAB > 0 ? legCD / legAB : 0.0
+
+    bool isBull = pX < pA
+    bool isBear = pX > pA
+    bool dirOK = (isBull and showBullish) or (isBear and showBearish)
+
+    // RSI Confirmation for D point - CRITICAL FILTER
+    bool rsiOK = true
+    if useRSIFilter
+        if isBull
+            rsiOK := rsiOversoldState or (requireDivergence ? bullDiv : true)
+        else
+            rsiOK := rsiOverboughtState or (requireDivergence ? bearDiv : true)
+
+    string patName = ""
+    float bestScore = 0.0
+    float tol = 0.12
+
+    if valid and dirOK and rsiOK
+        if isGartley(xab, abc, xad, tol)
+            float s = calcPatternScore("GARTLEY", xab, abc, bcd, xad)
+            if s > bestScore
+                bestScore := s
+                patName := "GARTLEY"
+
+        if isBat(xab, abc, xad, tol)
+            float s = calcPatternScore("BAT", xab, abc, bcd, xad)
+            if s > bestScore
+                bestScore := s
+                patName := "BAT"
+
+        if isButterfly(xab, abc, xad, tol)
+            float s = calcPatternScore("BUTTERFLY", xab, abc, bcd, xad)
+            if s > bestScore
+                bestScore := s
+                patName := "BUTTERFLY"
+
+        if isCrab(xab, abc, xad, tol)
+            float s = calcPatternScore("CRAB", xab, abc, bcd, xad)
+            if s > bestScore
+                bestScore := s
+                patName := "CRAB"
+
+        if isShark(xab, abc, xad, tol)
+            float s = calcPatternScore("SHARK", xab, abc, bcd, xad)
+            if s > bestScore
+                bestScore := s
+                patName := "SHARK"
+
+        if isCypher(xab, abc, xcd, tol)
+            float s = calcPatternScore("CYPHER", xab, abc, bcd, xad)
+            if s > bestScore
+                bestScore := s
+                patName := "CYPHER"
+
+        if isABCD(abc, cdab, tol)
+            float s = calcPatternScore("AB=CD", xab, abc, bcd, xad)
+            if s > bestScore
+                bestScore := s
+                patName := "AB=CD"
+
+    [patName, bestScore, isBull, bX, bA, bB, bC, bD, pX, pA, pB, pC, pD, xab, abc, bcd, xad, depth]
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                         DRAWING MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var line[] lineStore = array.new_line()
+var label[] labelStore = array.new_label()
+var int lastDrawnBar = 0
+
+cleanDrawings() =>
+    while array.size(lineStore) > 80
+        line.delete(array.shift(lineStore))
+    while array.size(labelStore) > 80
+        label.delete(array.shift(labelStore))
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//              MINIMALIST SCOTT CARNEY STYLE DRAWING (Clean & Professional)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+drawHarmonicPattern(string patName, float score, bool isBull, int bX, int bA, int bB, int bC, int bD, float pX, float pA, float pB, float pC, float pD, float xab, float abc, float bcd, float xad) =>
+    color mainCol = isBull ? bullColor : bearColor
+    int futureExt = przLength  // Fixed 10 bars extension for PRZ
+
+    // ══════════ PATTERN LINES (Width = 1, Solid for completed, Clean) ══════════
+    line lXA = line.new(bX, pX, bA, pA, color=mainCol, width=1, style=line.style_solid)
+    line lAB = line.new(bA, pA, bB, pB, color=mainCol, width=1, style=line.style_solid)
+    line lBC = line.new(bB, pB, bC, pC, color=mainCol, width=1, style=line.style_solid)
+    line lCD = line.new(bC, pC, bD, pD, color=mainCol, width=1, style=line.style_solid)
+
+    array.push(lineStore, lXA)
+    array.push(lineStore, lAB)
+    array.push(lineStore, lBC)
+    array.push(lineStore, lCD)
+
+    // Internal dashed lines (very subtle, thin dotted)
+    line lXB = line.new(bX, pX, bB, pB, color=color.new(mainCol, 70), width=1, style=line.style_dashed)
+    line lAC = line.new(bA, pA, bC, pC, color=color.new(mainCol, 70), width=1, style=line.style_dashed)
+    line lBD = line.new(bB, pB, bD, pD, color=color.new(mainCol, 70), width=1, style=line.style_dashed)
+
+    array.push(lineStore, lXB)
+    array.push(lineStore, lAC)
+    array.push(lineStore, lBD)
+
+    // ══════════ XABCD LABELS (Minimal - label.style_none for floating text) ══════════
+    float offset = math.abs(pA - pX) * 0.015
+
+    label lblX = label.new(bX, isBull ? pX - offset : pX + offset, "X", color=color.new(color.black, 100), textcolor=mainCol, style=label.style_none, size=size.small)
+    label lblA = label.new(bA, isBull ? pA + offset : pA - offset, "A", color=color.new(color.black, 100), textcolor=mainCol, style=label.style_none, size=size.small)
+    label lblB = label.new(bB, isBull ? pB - offset : pB + offset, "B", color=color.new(color.black, 100), textcolor=mainCol, style=label.style_none, size=size.small)
+    label lblC = label.new(bC, isBull ? pC + offset : pC - offset, "C", color=color.new(color.black, 100), textcolor=mainCol, style=label.style_none, size=size.small)
+
+    array.push(labelStore, lblX)
+    array.push(labelStore, lblA)
+    array.push(labelStore, lblB)
+    array.push(labelStore, lblC)
+
+    // ══════════ PATTERN NAME + WATERMARK AT D (Floating label) ══════════
+    string dirSymbol = isBull ? "▲" : "▼"
+    string dLabel = patName + " " + dirSymbol + "\n" + watermarkName
+
+    label lblD = label.new(bD, isBull ? pD - offset * 3 : pD + offset * 3, dLabel, color=color.new(color.black, 100), textcolor=mainCol, style=label.style_none, size=size.small)
+    array.push(labelStore, lblD)
+
+    // ══════════ RATIO LABELS ON PATTERN (Floating - no background) ══════════
+    if showRatioLabels
+        label rXAB = label.new(int(math.round((bX + bB) / 2.0)), (pX + pB) / 2, str.tostring(xab, "#.###"), color=color.new(color.black, 100), textcolor=color.new(mainCol, 40), style=label.style_none, size=size.tiny)
+        label rABC = label.new(int(math.round((bA + bC) / 2.0)), (pA + pC) / 2, str.tostring(abc, "#.###"), color=color.new(color.black, 100), textcolor=color.new(mainCol, 40), style=label.style_none, size=size.tiny)
+        label rXAD = label.new(int(math.round((bX + bD) / 2.0)), (pX + pD) / 2, str.tostring(xad, "#.###"), color=color.new(color.black, 100), textcolor=color.yellow, style=label.style_none, size=size.tiny)
+
+        array.push(labelStore, rXAB)
+        array.push(labelStore, rABC)
+        array.push(labelStore, rXAD)
+
+    // ══════════ SCOTT CARNEY PRZ (Thin Dotted Lines Only - Fixed 10 bar length) ══════════
+    if showPRZLevels
+        float legXA_val = math.abs(pA - pX)
+        float legBC_val = math.abs(pC - pB)
+
+        // XA Retracement Level (0.786)
+        float prz786 = isBull ? pA - legXA_val * 0.786 : pA + legXA_val * 0.786
+        line ln786 = line.new(bD, prz786, bD + futureExt, prz786, color=przColor, width=1, style=line.style_dotted)
+        label lbl786 = label.new(bD + futureExt, prz786, "0.786 XA", color=color.new(color.black, 100), textcolor=przColor, style=label.style_none, size=size.tiny)
+        array.push(lineStore, ln786)
+        array.push(labelStore, lbl786)
+
+        // BC Projection Level (1.272)
+        float prz1272 = isBull ? pC - legBC_val * 1.272 : pC + legBC_val * 1.272
+        line ln1272 = line.new(bD, prz1272, bD + futureExt, prz1272, color=przColor, width=1, style=line.style_dotted)
+        label lbl1272 = label.new(bD + futureExt, prz1272, "1.272 BC", color=color.new(color.black, 100), textcolor=przColor, style=label.style_none, size=size.tiny)
+        array.push(lineStore, ln1272)
+        array.push(labelStore, lbl1272)
+
+    // ══════════ STOP LOSS (Dotted line - Fixed length) ══════════
+    if showStopLoss
+        float slLvl = isBull ? pD - math.abs(pD - pC) * 0.3 : pD + math.abs(pD - pC) * 0.3
+
+        line slLine = line.new(bD, slLvl, bD + futureExt, slLvl, color=slColor, width=1, style=line.style_dotted)
+        label slLbl = label.new(bD + futureExt, slLvl, "SL", color=color.new(color.black, 100), textcolor=slColor, style=label.style_none, size=size.tiny)
+
+        array.push(lineStore, slLine)
+        array.push(labelStore, slLbl)
+
+    // ══════════ TARGETS (T1, T2) - Solid thin lines ══════════
+    if showTargets
+        float legAD_val = math.abs(pD - pA)
+        float t1 = isBull ? pD + legAD_val * 0.382 : pD - legAD_val * 0.382
+        float t2 = isBull ? pD + legAD_val * 0.618 : pD - legAD_val * 0.618
+
+        line t1Line = line.new(bD, t1, bD + futureExt, t1, color=targetColor, width=1, style=line.style_solid)
+        line t2Line = line.new(bD, t2, bD + futureExt, t2, color=targetColor, width=1, style=line.style_solid)
+
+        label t1Lbl = label.new(bD + futureExt, t1, "T1 (38.2%)", color=color.new(color.black, 100), textcolor=targetColor, style=label.style_none, size=size.tiny)
+        label t2Lbl = label.new(bD + futureExt, t2, "T2 (61.8%)", color=color.new(color.black, 100), textcolor=targetColor, style=label.style_none, size=size.tiny)
+
+        array.push(lineStore, t1Line)
+        array.push(lineStore, t2Line)
+        array.push(labelStore, t1Lbl)
+        array.push(labelStore, t2Lbl)
+
+    cleanDrawings()
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    MAIN DETECTION ENGINE (SURVIVAL OF FITTEST)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var string bestPatternName = ""
+var float bestPatternScore = 0.0
+var bool bestPatternBull = false
+var int bestPatternDepth = 0
+
+bool signalTriggered = false
+
+if barstate.isconfirmed
+    // Use historical RSI values for confirmation (no repainting)
+    bool rsiOSConfirmed = rsiOS[1]
+    bool rsiOBConfirmed = rsiOB[1]
+
+    // Analyze patterns at all relevant depths
+    [name24, score24, bull24, bX24, bA24, bB24, bC24, bD24, pX24, pA24, pB24, pC24, pD24, xab24, abc24, bcd24, xad24, d24] = analyzePattern(prices24, bars24, 24, rsiOSConfirmed, rsiOBConfirmed, bullishDiv, bearishDiv)
+    [name36, score36, bull36, bX36, bA36, bB36, bC36, bD36, pX36, pA36, pB36, pC36, pD36, xab36, abc36, bcd36, xad36, d36] = analyzePattern(prices36, bars36, 36, rsiOSConfirmed, rsiOBConfirmed, bullishDiv, bearishDiv)
+    [name48, score48, bull48, bX48, bA48, bB48, bC48, bD48, pX48, pA48, pB48, pC48, pD48, xab48, abc48, bcd48, xad48, d48] = analyzePattern(prices48, bars48, 48, rsiOSConfirmed, rsiOBConfirmed, bullishDiv, bearishDiv)
+
+    // Optional: analyze minor depths if mode allows
+    string name6 = ""
+    float score6 = 0.0
+    bool bull6 = false
+    int bX6 = 0
+    int bA6 = 0
+    int bB6 = 0
+    int bC6 = 0
+    int bD6 = 0
+    float pX6 = 0.0
+    float pA6 = 0.0
+    float pB6 = 0.0
+    float pC6 = 0.0
+    float pD6 = 0.0
+    float xab6 = 0.0
+    float abc6 = 0.0
+    float bcd6 = 0.0
+    float xad6 = 0.0
+
+    string name12 = ""
+    float score12 = 0.0
+    bool bull12 = false
+    int bX12 = 0
+    int bA12 = 0
+    int bB12 = 0
+    int bC12 = 0
+    int bD12 = 0
+    float pX12 = 0.0
+    float pA12 = 0.0
+    float pB12 = 0.0
+    float pC12 = 0.0
+    float pD12 = 0.0
+    float xab12 = 0.0
+    float abc12 = 0.0
+    float bcd12 = 0.0
+    float xad12 = 0.0
+
+    if not useMajorOnly
+        [n6, s6, b6, bx6_, ba6_, bb6_, bc6_, bd6_, px6_, pa6_, pb6_, pc6_, pd6_, xab6_, abc6_, bcd6_, xad6_, d6_] = analyzePattern(prices6, bars6, 6, rsiOSConfirmed, rsiOBConfirmed, bullishDiv, bearishDiv)
+        [n12, s12, b12, bx12_, ba12_, bb12_, bc12_, bd12_, px12_, pa12_, pb12_, pc12_, pd12_, xab12_, abc12_, bcd12_, xad12_, d12_] = analyzePattern(prices12, bars12, 12, rsiOSConfirmed, rsiOBConfirmed, bullishDiv, bearishDiv)
+
+        name6 := n6
+        score6 := s6
+        bull6 := b6
+        bX6 := bx6_
+        bA6 := ba6_
+        bB6 := bb6_
+        bC6 := bc6_
+        bD6 := bd6_
+        pX6 := px6_
+        pA6 := pa6_
+        pB6 := pb6_
+        pC6 := pc6_
+        pD6 := pd6_
+        xab6 := xab6_
+        abc6 := abc6_
+        bcd6 := bcd6_
+        xad6 := xad6_
+
+        name12 := n12
+        score12 := s12
+        bull12 := b12
+        bX12 := bx12_
+        bA12 := ba12_
+        bB12 := bb12_
+        bC12 := bc12_
+        bD12 := bd12_
+        pX12 := px12_
+        pA12 := pa12_
+        pB12 := pb12_
+        pC12 := pc12_
+        pD12 := pd12_
+        xab12 := xab12_
+        abc12 := abc12_
+        bcd12 := bcd12_
+        xad12 := xad12_
+
+    // ══════════ SURVIVAL OF THE FITTEST ══════════
+    // Find best pattern across all depths - highest score wins
+    string winnerName = ""
+    float winnerScore = 0.0
+    bool winnerBull = false
+    int winnerBX = 0
+    int winnerBA = 0
+    int winnerBB = 0
+    int winnerBC = 0
+    int winnerBD = 0
+    float winnerPX = 0.0
+    float winnerPA = 0.0
+    float winnerPB = 0.0
+    float winnerPC = 0.0
+    float winnerPD = 0.0
+    float winnerXAB = 0.0
+    float winnerABC = 0.0
+    float winnerBCD = 0.0
+    float winnerXAD = 0.0
+    int winnerDepth = 0
+
+    // Check minor depths only if allowed
+    if not useMajorOnly
+        if name6 != "" and score6 > winnerScore and score6 >= minAccuracy
+            winnerName := name6
+            winnerScore := score6
+            winnerBull := bull6
+            winnerBX := bX6
+            winnerBA := bA6
+            winnerBB := bB6
+            winnerBC := bC6
+            winnerBD := bD6
+            winnerPX := pX6
+            winnerPA := pA6
+            winnerPB := pB6
+            winnerPC := pC6
+            winnerPD := pD6
+            winnerXAB := xab6
+            winnerABC := abc6
+            winnerBCD := bcd6
+            winnerXAD := xad6
+            winnerDepth := 6
+
+        if name12 != "" and score12 > winnerScore and score12 >= minAccuracy
+            winnerName := name12
+            winnerScore := score12
+            winnerBull := bull12
+            winnerBX := bX12
+            winnerBA := bA12
+            winnerBB := bB12
+            winnerBC := bC12
+            winnerBD := bD12
+            winnerPX := pX12
+            winnerPA := pA12
+            winnerPB := pB12
+            winnerPC := pC12
+            winnerPD := pD12
+            winnerXAB := xab12
+            winnerABC := abc12
+            winnerBCD := bcd12
+            winnerXAD := xad12
+            winnerDepth := 12
+
+    // Always check major depths (24, 36, 48)
+    if name24 != "" and score24 > winnerScore and score24 >= minAccuracy
+        winnerName := name24
+        winnerScore := score24
+        winnerBull := bull24
+        winnerBX := bX24
+        winnerBA := bA24
+        winnerBB := bB24
+        winnerBC := bC24
+        winnerBD := bD24
+        winnerPX := pX24
+        winnerPA := pA24
+        winnerPB := pB24
+        winnerPC := pC24
+        winnerPD := pD24
+        winnerXAB := xab24
+        winnerABC := abc24
+        winnerBCD := bcd24
+        winnerXAD := xad24
+        winnerDepth := 24
+
+    if name36 != "" and score36 > winnerScore and score36 >= minAccuracy
+        winnerName := name36
+        winnerScore := score36
+        winnerBull := bull36
+        winnerBX := bX36
+        winnerBA := bA36
+        winnerBB := bB36
+        winnerBC := bC36
+        winnerBD := bD36
+        winnerPX := pX36
+        winnerPA := pA36
+        winnerPB := pB36
+        winnerPC := pC36
+        winnerPD := pD36
+        winnerXAB := xab36
+        winnerABC := abc36
+        winnerBCD := bcd36
+        winnerXAD := xad36
+        winnerDepth := 36
+
+    if name48 != "" and score48 > winnerScore and score48 >= minAccuracy
+        winnerName := name48
+        winnerScore := score48
+        winnerBull := bull48
+        winnerBX := bX48
+        winnerBA := bA48
+        winnerBB := bB48
+        winnerBC := bC48
+        winnerBD := bD48
+        winnerPX := pX48
+        winnerPA := pA48
+        winnerPB := pB48
+        winnerPC := pC48
+        winnerPD := pD48
+        winnerXAB := xab48
+        winnerABC := abc48
+        winnerBCD := bcd48
+        winnerXAD := xad48
+        winnerDepth := 48
+
+    // Draw only if we have a winner and it's a new pattern
+    if winnerName != "" and winnerBD > lastDrawnBar
+        drawHarmonicPattern(winnerName, winnerScore, winnerBull, winnerBX, winnerBA, winnerBB, winnerBC, winnerBD, winnerPX, winnerPA, winnerPB, winnerPC, winnerPD, winnerXAB, winnerABC, winnerBCD, winnerXAD)
+        lastDrawnBar := winnerBD
+        bestPatternName := winnerName
+        bestPatternScore := winnerScore
+        bestPatternBull := winnerBull
+        bestPatternDepth := winnerDepth
+        signalTriggered := true
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                         INFORMATION PANEL
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var table infoPanel = table.new(position.top_right, 2, 9, bgcolor=color.new(#0d1117, 90), border_width=1, border_color=color.new(#30363d, 50))
+
+if barstate.islast
+    table.cell(infoPanel, 0, 0, "LEX-Q", text_color=color.white, text_size=size.small, bgcolor=color.new(#238636, 30))
+    table.cell(infoPanel, 1, 0, "HARMONIC v6", text_color=color.white, text_size=size.small, bgcolor=color.new(#238636, 30))
+
+    table.cell(infoPanel, 0, 1, "Pattern:", text_color=color.gray, text_size=size.tiny)
+    table.cell(infoPanel, 1, 1, bestPatternName != "" ? bestPatternName : "Scanning...", text_color=bestPatternBull ? bullColor : bearColor, text_size=size.tiny)
+
+    table.cell(infoPanel, 0, 2, "Score:", text_color=color.gray, text_size=size.tiny)
+    color scoreCol = bestPatternScore >= 95 ? color.lime : bestPatternScore >= 90 ? color.green : color.orange
+    table.cell(infoPanel, 1, 2, str.tostring(bestPatternScore, "#.#") + "%", text_color=scoreCol, text_size=size.tiny)
+
+    table.cell(infoPanel, 0, 3, "Depth:", text_color=color.gray, text_size=size.tiny)
+    table.cell(infoPanel, 1, 3, str.tostring(bestPatternDepth), text_color=color.gray, text_size=size.tiny)
+
+    table.cell(infoPanel, 0, 4, "Mode:", text_color=color.gray, text_size=size.tiny)
+    table.cell(infoPanel, 1, 4, useMajorOnly ? "Major (24,36,48)" : "All Depths", text_color=color.gray, text_size=size.tiny)
+
+    table.cell(infoPanel, 0, 5, "RSI:", text_color=color.gray, text_size=size.tiny)
+    color rsiCol = rsiOB ? color.red : rsiOS ? color.green : color.gray
+    table.cell(infoPanel, 1, 5, str.tostring(rsiValue, "#.#"), text_color=rsiCol, text_size=size.tiny)
+
+    table.cell(infoPanel, 0, 6, "RSI Filter:", text_color=color.gray, text_size=size.tiny)
+    table.cell(infoPanel, 1, 6, useRSIFilter ? "ON" : "OFF", text_color=useRSIFilter ? color.lime : color.gray, text_size=size.tiny)
+
+    table.cell(infoPanel, 0, 7, "Divergence:", text_color=color.gray, text_size=size.tiny)
+    string divText = bullishDiv ? "BULL" : bearishDiv ? "BEAR" : "NONE"
+    color divCol = bullishDiv ? color.green : bearishDiv ? color.red : color.gray
+    table.cell(infoPanel, 1, 7, divText, text_color=divCol, text_size=size.tiny)
+
+    table.cell(infoPanel, 0, 8, "Confirm:", text_color=color.gray, text_size=size.tiny)
+    table.cell(infoPanel, 1, 8, str.tostring(pivotConfirmBars) + " bars", text_color=color.gray, text_size=size.tiny)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                         REQUIRED OUTPUTS (MANDATORY)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+plotshape(signalTriggered and bestPatternBull, "Bullish Signal", shape.triangleup, location.belowbar, bullColor, size=size.tiny)
+plotshape(signalTriggered and not bestPatternBull and bestPatternName != "", "Bearish Signal", shape.triangledown, location.abovebar, bearColor, size=size.tiny)
+
+bgcolor(signalTriggered ? color.new(bestPatternBull ? bullColor : bearColor, 95) : na, title="Signal BG")
+
+plot(rsiValue, "RSI", color=color.new(color.gray, 100), display=display.status_line)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                         ALERTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+alertcondition(signalTriggered and bestPatternBull, "Bullish Harmonic", "LEX-Q: Bullish Harmonic Pattern Detected!")
+alertcondition(signalTriggered and not bestPatternBull and bestPatternName != "", "Bearish Harmonic", "LEX-Q: Bearish Harmonic Pattern Detected!")
+alertcondition(signalTriggered, "Any Harmonic", "LEX-Q: Harmonic Pattern Detected!")
