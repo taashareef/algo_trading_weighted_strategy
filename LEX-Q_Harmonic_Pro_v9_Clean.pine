@@ -1,0 +1,320 @@
+//@version=5
+indicator("LEX-Q Harmonic Pro v9.0 Clean", shorttitle="LEX-Q HP v9", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ╔══════════════════════════════════════════════════════════════════════════════╗
+// ║                    LEX-Q HARMONIC PATTERN INDICATOR v9.0                     ║
+// ║                         Clean Edition - Pure ZigZag                          ║
+// ║                                                                              ║
+// ║  FEATURES:                                                                   ║
+// ║  • Pure High/Low ZigZag - No complex filters                                ║
+// ║  • Instant D Detection - No waiting for candle close                        ║
+// ║  • Clean Neon Lines - Solid, thin, transparent                              ║
+// ║  • Minimal Labels - Pattern name only                                        ║
+// ║  • Simple PRZ - One target, one stop loss                                   ║
+// ╚══════════════════════════════════════════════════════════════════════════════╝
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              INPUTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+string grp1 = "══════ Patterns ══════"
+bool enableGartley = input.bool(true, "Gartley", group=grp1, inline="p1")
+bool enableBat = input.bool(true, "Bat", group=grp1, inline="p1")
+bool enableButterfly = input.bool(true, "Butterfly", group=grp1, inline="p1")
+bool enableCrab = input.bool(true, "Crab", group=grp1, inline="p2")
+bool enableShark = input.bool(true, "Shark", group=grp1, inline="p2")
+bool enableCypher = input.bool(true, "Cypher", group=grp1, inline="p2")
+
+string grp2 = "══════ Direction ══════"
+bool showBullish = input.bool(true, "Bullish", group=grp2, inline="dir")
+bool showBearish = input.bool(true, "Bearish", group=grp2, inline="dir")
+
+string grp3 = "══════ ZigZag ══════"
+int zzLength = input.int(10, "ZigZag Length", minval=3, maxval=50, group=grp3, tooltip="Window size for High/Low detection")
+float ratioTol = input.float(10.0, "Ratio Tolerance %", minval=2.0, maxval=20.0, group=grp3)
+
+string grp4 = "══════ Display ══════"
+bool showTarget = input.bool(true, "Show Target Line", group=grp4)
+bool showStopLoss = input.bool(true, "Show Stop Loss Line", group=grp4)
+int lineTransparency = input.int(20, "Line Transparency %", minval=0, maxval=50, group=grp4)
+
+// Neon Colors with transparency
+color bullColorBase = #00E5FF
+color bearColorBase = #FF5252
+color bullColor = color.new(bullColorBase, lineTransparency)
+color bearColor = color.new(bearColorBase, lineTransparency)
+color targetColorBase = #69F0AE
+color slColorBase = #FF5252
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    PURE ZIGZAG ENGINE (Highest High / Lowest Low)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Find highest high and lowest low in window
+float hh = ta.highest(high, zzLength)
+float ll = ta.lowest(low, zzLength)
+
+// Track zigzag pivots
+var float[] zzPrices = array.new_float(6, na)
+var int[] zzBars = array.new_int(6, 0)
+var int[] zzDirs = array.new_int(6, 0)  // 1=high, -1=low
+
+// Current direction tracking
+var int zzDirection = 0  // 1=up (looking for high), -1=down (looking for low)
+var float lastPivotPrice = na
+var int lastPivotBar = 0
+
+// Shift array helper
+shiftZZ(float price, int barIdx, int dir) =>
+    for i = 5 to 1
+        array.set(zzPrices, i, array.get(zzPrices, i - 1))
+        array.set(zzBars, i, array.get(zzBars, i - 1))
+        array.set(zzDirs, i, array.get(zzDirs, i - 1))
+    array.set(zzPrices, 0, price)
+    array.set(zzBars, 0, barIdx)
+    array.set(zzDirs, 0, dir)
+
+// Pure zigzag logic - instant detection
+bool isNewHigh = high == hh and high > nz(lastPivotPrice, high)
+bool isNewLow = low == ll and low < nz(lastPivotPrice, low)
+
+// First pivot initialization
+if na(lastPivotPrice)
+    if high == hh
+        lastPivotPrice := high
+        lastPivotBar := bar_index
+        zzDirection := 1
+        shiftZZ(high, bar_index, 1)
+    else if low == ll
+        lastPivotPrice := low
+        lastPivotBar := bar_index
+        zzDirection := -1
+        shiftZZ(low, bar_index, -1)
+
+// Zigzag direction changes
+if zzDirection == 1  // Was going up, looking for reversal down
+    if low == ll and bar_index > lastPivotBar + 2
+        // New low found - direction change
+        shiftZZ(low, bar_index, -1)
+        lastPivotPrice := low
+        lastPivotBar := bar_index
+        zzDirection := -1
+    else if high > nz(array.get(zzPrices, 0), 0) and nz(array.get(zzDirs, 0), 0) == 1
+        // Higher high - update current pivot
+        array.set(zzPrices, 0, high)
+        array.set(zzBars, 0, bar_index)
+        lastPivotPrice := high
+        lastPivotBar := bar_index
+
+else if zzDirection == -1  // Was going down, looking for reversal up
+    if high == hh and bar_index > lastPivotBar + 2
+        // New high found - direction change
+        shiftZZ(high, bar_index, 1)
+        lastPivotPrice := high
+        lastPivotBar := bar_index
+        zzDirection := 1
+    else if low < nz(array.get(zzPrices, 0), 0) and nz(array.get(zzDirs, 0), 0) == -1
+        // Lower low - update current pivot
+        array.set(zzPrices, 0, low)
+        array.set(zzBars, 0, bar_index)
+        lastPivotPrice := low
+        lastPivotBar := bar_index
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    PATTERN RATIO DETECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+float tol = ratioTol / 100.0
+
+// Ratio check functions
+inRange(float val, float target) =>
+    val >= target * (1 - tol) and val <= target * (1 + tol)
+
+inRangeMinMax(float val, float minT, float maxT) =>
+    val >= minT * (1 - tol) and val <= maxT * (1 + tol)
+
+// Get pivot points (X, A, B, C, D)
+float pX = nz(array.get(zzPrices, 4), 0)
+float pA = nz(array.get(zzPrices, 3), 0)
+float pB = nz(array.get(zzPrices, 2), 0)
+float pC = nz(array.get(zzPrices, 1), 0)
+float pD = nz(array.get(zzPrices, 0), 0)
+
+int bX = nz(array.get(zzBars, 4), 0)
+int bA = nz(array.get(zzBars, 3), 0)
+int bB = nz(array.get(zzBars, 2), 0)
+int bC = nz(array.get(zzBars, 1), 0)
+int bD = nz(array.get(zzBars, 0), 0)
+
+// Validate points exist and are in order
+bool validPoints = pX > 0 and pA > 0 and pB > 0 and pC > 0 and pD > 0
+validPoints := validPoints and bX < bA and bA < bB and bB < bC and bC < bD
+
+// Calculate ratios
+float legXA = math.abs(pA - pX)
+float legAB = math.abs(pB - pA)
+float legBC = math.abs(pC - pB)
+float legCD = math.abs(pD - pC)
+float legAD = math.abs(pD - pA)
+float legXC = math.abs(pC - pX)
+
+float xab = legXA > 0 ? legAB / legXA : 0
+float abc = legAB > 0 ? legBC / legAB : 0
+float bcd = legBC > 0 ? legCD / legBC : 0
+float xad = legXA > 0 ? legAD / legXA : 0
+float xcd = legXC > 0 ? legCD / legXC : 0
+
+// Direction check
+bool isBull = pA > pX and pB < pA and pC > pB and pD < pC
+bool isBear = pA < pX and pB > pA and pC < pB and pD > pC
+bool dirOK = (isBull and showBullish) or (isBear and showBearish)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    PATTERN DETECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+string patternName = ""
+
+if validPoints and dirOK
+    // Gartley: XAB=0.618, XAD=0.786
+    if enableGartley and inRange(xab, 0.618) and inRangeMinMax(abc, 0.382, 0.886) and inRange(xad, 0.786)
+        patternName := "Gartley"
+
+    // Bat: XAB=0.382-0.5, XAD=0.886
+    if enableBat and inRangeMinMax(xab, 0.382, 0.5) and inRangeMinMax(abc, 0.382, 0.886) and inRange(xad, 0.886)
+        patternName := "Bat"
+
+    // Butterfly: XAB=0.786, XAD=1.27-1.618
+    if enableButterfly and inRange(xab, 0.786) and inRangeMinMax(abc, 0.382, 0.886) and inRangeMinMax(xad, 1.27, 1.618)
+        patternName := "Butterfly"
+
+    // Crab: XAB=0.382-0.618, XAD=1.618
+    if enableCrab and inRangeMinMax(xab, 0.382, 0.618) and inRangeMinMax(abc, 0.382, 0.886) and inRange(xad, 1.618)
+        patternName := "Crab"
+
+    // Shark: XAB=0.382-0.618, ABC=1.13-1.618, XAD=0.886-1.13
+    if enableShark and inRangeMinMax(xab, 0.382, 0.618) and inRangeMinMax(abc, 1.13, 1.618) and inRangeMinMax(xad, 0.886, 1.13)
+        patternName := "Shark"
+
+    // Cypher: XAB=0.382-0.618, XCD=0.786
+    if enableCypher and inRangeMinMax(xab, 0.382, 0.618) and inRangeMinMax(abc, 1.13, 1.414) and inRange(xcd, 0.786)
+        patternName := "Cypher"
+
+bool patternFound = patternName != ""
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    CLEAN DRAWING ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var line lnXA = na
+var line lnAB = na
+var line lnBC = na
+var line lnCD = na
+var line lnXB = na
+var line lnAC = na
+var line lnBD = na
+var label lblName = na
+var line lnTarget = na
+var line lnSL = na
+
+var int lastDrawnBar = 0
+
+// Only draw when pattern found and new
+if patternFound and bD > lastDrawnBar
+    // Delete old drawings
+    line.delete(lnXA)
+    line.delete(lnAB)
+    line.delete(lnBC)
+    line.delete(lnCD)
+    line.delete(lnXB)
+    line.delete(lnAC)
+    line.delete(lnBD)
+    label.delete(lblName)
+    line.delete(lnTarget)
+    line.delete(lnSL)
+
+    // Main color
+    color mainCol = isBull ? bullColor : bearColor
+    color mainColSolid = isBull ? color.new(bullColorBase, 0) : color.new(bearColorBase, 0)
+
+    // ══════════ PATTERN LEGS (Solid, Width=1, Transparent) ══════════
+    lnXA := line.new(bX, pX, bA, pA, color=mainCol, width=1, style=line.style_solid)
+    lnAB := line.new(bA, pA, bB, pB, color=mainCol, width=1, style=line.style_solid)
+    lnBC := line.new(bB, pB, bC, pC, color=mainCol, width=1, style=line.style_solid)
+    lnCD := line.new(bC, pC, bD, pD, color=mainCol, width=1, style=line.style_solid)
+
+    // ══════════ INTERNAL LINES (Same style, more transparent) ══════════
+    color innerCol = color.new(isBull ? bullColorBase : bearColorBase, lineTransparency + 30)
+    lnXB := line.new(bX, pX, bB, pB, color=innerCol, width=1, style=line.style_solid)
+    lnAC := line.new(bA, pA, bC, pC, color=innerCol, width=1, style=line.style_solid)
+    lnBD := line.new(bB, pB, bD, pD, color=innerCol, width=1, style=line.style_solid)
+
+    // ══════════ PATTERN NAME ONLY (Clean, no clutter) ══════════
+    string arrow = isBull ? " ▲" : " ▼"
+    float offset = legXA * 0.03
+    float lblY = isBull ? pD - offset : pD + offset
+    lblName := label.new(bD, lblY, patternName + arrow, color=color.new(color.black, 100), textcolor=mainColSolid, style=label.style_none, size=size.normal)
+
+    // ══════════ SINGLE TARGET LINE (Solid, extending right) ══════════
+    if showTarget
+        float targetLvl = isBull ? pD + legAD * 0.618 : pD - legAD * 0.618
+        color tgtCol = color.new(targetColorBase, lineTransparency)
+        lnTarget := line.new(bD, targetLvl, bD + 100, targetLvl, color=tgtCol, width=1, style=line.style_solid, extend=extend.right)
+
+    // ══════════ SINGLE STOP LOSS LINE (Solid, extending right) ══════════
+    if showStopLoss
+        float slLvl = isBull ? pD - legCD * 0.3 : pD + legCD * 0.3
+        color slCol = color.new(slColorBase, lineTransparency + 20)
+        lnSL := line.new(bD, slLvl, bD + 100, slLvl, color=slCol, width=1, style=line.style_solid, extend=extend.right)
+
+    lastDrawnBar := bD
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    LIVE D POINT UPDATE (Instant Detection)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Update CD line in real-time as price moves
+if patternFound and not na(lnCD)
+    float currentD = isBull ? low : high
+    int currentBar = bar_index
+
+    // Update the D point to current price if it extends the pattern
+    if (isBull and currentD < pD) or (isBear and currentD > pD)
+        line.set_xy2(lnCD, currentBar, currentD)
+
+        // Recalculate and update target/SL
+        float newLegCD = math.abs(currentD - pC)
+        float newLegAD = math.abs(currentD - pA)
+
+        if showTarget and not na(lnTarget)
+            float newTarget = isBull ? currentD + newLegAD * 0.618 : currentD - newLegAD * 0.618
+            line.set_y1(lnTarget, newTarget)
+            line.set_y2(lnTarget, newTarget)
+
+        if showStopLoss and not na(lnSL)
+            float newSL = isBull ? currentD - newLegCD * 0.3 : currentD + newLegCD * 0.3
+            line.set_y1(lnSL, newSL)
+            line.set_y2(lnSL, newSL)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    SIGNAL OUTPUT (Required)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+bool newSignal = patternFound and bD == bar_index
+
+plotshape(newSignal and isBull, "Bull", shape.triangleup, location.belowbar, color.new(bullColorBase, 0), size=size.tiny)
+plotshape(newSignal and isBear, "Bear", shape.triangledown, location.abovebar, color.new(bearColorBase, 0), size=size.tiny)
+
+// Background flash
+bgcolor(newSignal ? color.new(isBull ? bullColorBase : bearColorBase, 90) : na)
+
+// Dummy plot
+plot(na, display=display.none)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    ALERTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+alertcondition(newSignal and isBull, "Bullish Pattern", "LEX-Q: Bullish " + patternName)
+alertcondition(newSignal and isBear, "Bearish Pattern", "LEX-Q: Bearish " + patternName)
+alertcondition(newSignal, "Any Pattern", "LEX-Q: " + patternName + " Pattern Detected")
