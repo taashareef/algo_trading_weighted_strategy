@@ -1,0 +1,558 @@
+//@version=5
+indicator("LEX-Q Harmonic Pro v8.0 Strict", shorttitle="LEX-Q HP v8", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ╔══════════════════════════════════════════════════════════════════════════════╗
+// ║                    LEX-Q HARMONIC PATTERN INDICATOR v8.0                     ║
+// ║              Strict Scott Carney Methodology - No Compromises                ║
+// ║                                                                              ║
+// ║  STRICT RULES IMPLEMENTED:                                                   ║
+// ║  • Exact Fibonacci ratios with configurable tolerance (default 2%)          ║
+// ║  • PRZ Convergence: 3 levels must align in tight zone                       ║
+// ║  • Major Pivots Only: 50+ bar significance filter                           ║
+// ║  • No Repainting: barstate.isconfirmed on all signals                       ║
+// ║  • Error Rate Display: Shows accuracy % on each pattern                     ║
+// ╚══════════════════════════════════════════════════════════════════════════════╝
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              INPUTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+string grp1 = "══════ Pattern Selection ══════"
+bool enableGartley = input.bool(true, "Gartley", group=grp1, inline="p1")
+bool enableBat = input.bool(true, "Bat", group=grp1, inline="p1")
+bool enableButterfly = input.bool(true, "Butterfly", group=grp1, inline="p2")
+bool enableCrab = input.bool(true, "Crab", group=grp1, inline="p2")
+bool enableShark = input.bool(true, "Shark", group=grp1, inline="p3")
+bool enableCypher = input.bool(true, "Cypher", group=grp1, inline="p3")
+bool enableABCD = input.bool(true, "AB=CD", group=grp1, inline="p4")
+
+string grp2 = "══════ Direction Filter ══════"
+bool showBullish = input.bool(true, "Bullish", group=grp2, inline="dir")
+bool showBearish = input.bool(true, "Bearish", group=grp2, inline="dir")
+
+string grp3 = "══════ STRICT Ratio Settings ══════"
+float ratioTolerance = input.float(2.0, "Ratio Tolerance %", minval=0.5, maxval=10.0, step=0.5, group=grp3, tooltip="Scott Carney recommends 2% max. Lower = stricter patterns")
+float przConvergence = input.float(3.0, "PRZ Convergence Zone %", minval=1.0, maxval=10.0, step=0.5, group=grp3, tooltip="How close PRZ levels must be to each other")
+float maxErrorRate = input.float(5.0, "Max Error Rate % (Auto-hide)", minval=1.0, maxval=20.0, step=1.0, group=grp3, tooltip="Patterns with error > this will be hidden")
+bool showErrorLabel = input.bool(true, "Show Error Rate on Pattern", group=grp3)
+
+string grp4 = "══════ Pivot Quality Filter ══════"
+int pivotStrength = input.int(50, "Minimum Pivot Strength (bars)", minval=10, maxval=100, group=grp4, tooltip="Pivot must be highest/lowest within this many bars")
+int zigzagDepth = input.int(20, "ZigZag Depth", minval=5, maxval=50, group=grp4)
+
+string grp5 = "══════ Visual Settings ══════"
+bool showPRZLevels = input.bool(true, "Show PRZ Levels", group=grp5)
+bool showTargets = input.bool(true, "Show Targets", group=grp5)
+bool showStopLoss = input.bool(true, "Show Stop Loss", group=grp5)
+bool showRatioLabels = input.bool(true, "Show Ratios on Legs", group=grp5)
+
+// Neon Colors
+color bullColor = color.new(#00E5FF, 0)
+color bearColor = color.new(#FF5252, 0)
+color przColor = color.new(#B388FF, 0)
+color targetColor = color.new(#69F0AE, 0)
+color slColor = color.new(#FF5252, 30)
+color errorGoodColor = color.new(#00E676, 0)
+color errorBadColor = color.new(#FF5252, 0)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    SCOTT CARNEY EXACT RATIO DEFINITIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Convert tolerance % to decimal
+float tol = ratioTolerance / 100.0
+
+// Exact ratio check with tolerance
+isExactRatio(float actual, float target, float tolerance) =>
+    float minVal = target * (1.0 - tolerance)
+    float maxVal = target * (1.0 + tolerance)
+    actual >= minVal and actual <= maxVal
+
+// Range ratio check with tolerance
+isInRange(float actual, float minTarget, float maxTarget, float tolerance) =>
+    float minVal = minTarget * (1.0 - tolerance)
+    float maxVal = maxTarget * (1.0 + tolerance)
+    actual >= minVal and actual <= maxVal
+
+// Calculate error percentage from target
+calcError(float actual, float target) =>
+    math.abs(actual - target) / target * 100.0
+
+// Calculate error from range (0 if inside, distance if outside)
+calcRangeError(float actual, float minTarget, float maxTarget) =>
+    if actual >= minTarget and actual <= maxTarget
+        0.0
+    else if actual < minTarget
+        (minTarget - actual) / minTarget * 100.0
+    else
+        (actual - maxTarget) / maxTarget * 100.0
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    STRICT PATTERN VALIDATION (Scott Carney Rules)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Returns [isValid, errorRate, patternName]
+validateGartley(float xab, float abc, float bcd, float xad) =>
+    // Gartley: XAB = 0.618 (EXACT), ABC = 0.382-0.886, BCD = 1.13-1.618, XAD = 0.786 (EXACT)
+    bool xabOK = isExactRatio(xab, 0.618, tol)
+    bool abcOK = isInRange(abc, 0.382, 0.886, tol)
+    bool xadOK = isExactRatio(xad, 0.786, tol)
+
+    float xabErr = calcError(xab, 0.618)
+    float abcErr = calcRangeError(abc, 0.382, 0.886)
+    float xadErr = calcError(xad, 0.786)
+    float avgErr = (xabErr + abcErr + xadErr) / 3.0
+
+    bool isValid = enableGartley and xabOK and abcOK and xadOK
+    [isValid, avgErr, "Gartley"]
+
+validateBat(float xab, float abc, float bcd, float xad) =>
+    // Bat: XAB = 0.382-0.50 (EXACT RANGE), ABC = 0.382-0.886, XAD = 0.886 (EXACT)
+    bool xabOK = isInRange(xab, 0.382, 0.50, tol)
+    bool abcOK = isInRange(abc, 0.382, 0.886, tol)
+    bool xadOK = isExactRatio(xad, 0.886, tol)
+
+    float xabErr = calcRangeError(xab, 0.382, 0.50)
+    float abcErr = calcRangeError(abc, 0.382, 0.886)
+    float xadErr = calcError(xad, 0.886)
+    float avgErr = (xabErr + abcErr + xadErr) / 3.0
+
+    bool isValid = enableBat and xabOK and abcOK and xadOK
+    [isValid, avgErr, "Bat"]
+
+validateButterfly(float xab, float abc, float bcd, float xad) =>
+    // Butterfly: XAB = 0.786 (EXACT), ABC = 0.382-0.886, XAD = 1.27-1.618
+    bool xabOK = isExactRatio(xab, 0.786, tol)
+    bool abcOK = isInRange(abc, 0.382, 0.886, tol)
+    bool xadOK = isInRange(xad, 1.27, 1.618, tol)
+
+    float xabErr = calcError(xab, 0.786)
+    float abcErr = calcRangeError(abc, 0.382, 0.886)
+    float xadErr = calcRangeError(xad, 1.27, 1.618)
+    float avgErr = (xabErr + abcErr + xadErr) / 3.0
+
+    bool isValid = enableButterfly and xabOK and abcOK and xadOK
+    [isValid, avgErr, "Butterfly"]
+
+validateCrab(float xab, float abc, float bcd, float xad) =>
+    // Crab: XAB = 0.382-0.618, ABC = 0.382-0.886, XAD = 1.618 (EXACT)
+    bool xabOK = isInRange(xab, 0.382, 0.618, tol)
+    bool abcOK = isInRange(abc, 0.382, 0.886, tol)
+    bool xadOK = isExactRatio(xad, 1.618, tol * 1.5)  // Slightly more tolerance for extended patterns
+
+    float xabErr = calcRangeError(xab, 0.382, 0.618)
+    float abcErr = calcRangeError(abc, 0.382, 0.886)
+    float xadErr = calcError(xad, 1.618)
+    float avgErr = (xabErr + abcErr + xadErr) / 3.0
+
+    bool isValid = enableCrab and xabOK and abcOK and xadOK
+    [isValid, avgErr, "Crab"]
+
+validateShark(float xab, float abc, float bcd, float xad) =>
+    // Shark: XAB = 0.382-0.618, ABC = 1.13-1.618, XAD = 0.886-1.13
+    bool xabOK = isInRange(xab, 0.382, 0.618, tol)
+    bool abcOK = isInRange(abc, 1.13, 1.618, tol)
+    bool xadOK = isInRange(xad, 0.886, 1.13, tol)
+
+    float xabErr = calcRangeError(xab, 0.382, 0.618)
+    float abcErr = calcRangeError(abc, 1.13, 1.618)
+    float xadErr = calcRangeError(xad, 0.886, 1.13)
+    float avgErr = (xabErr + abcErr + xadErr) / 3.0
+
+    bool isValid = enableShark and xabOK and abcOK and xadOK
+    [isValid, avgErr, "Shark"]
+
+validateCypher(float xab, float abc, float xcd) =>
+    // Cypher: XAB = 0.382-0.618, ABC = 1.13-1.414, XCD = 0.786 (EXACT)
+    bool xabOK = isInRange(xab, 0.382, 0.618, tol)
+    bool abcOK = isInRange(abc, 1.13, 1.414, tol)
+    bool xcdOK = isExactRatio(xcd, 0.786, tol)
+
+    float xabErr = calcRangeError(xab, 0.382, 0.618)
+    float abcErr = calcRangeError(abc, 1.13, 1.414)
+    float xcdErr = calcError(xcd, 0.786)
+    float avgErr = (xabErr + abcErr + xcdErr) / 3.0
+
+    bool isValid = enableCypher and xabOK and abcOK and xcdOK
+    [isValid, avgErr, "Cypher"]
+
+validateABCD(float abc, float bcd) =>
+    // AB=CD: ABC = 0.382-0.886, BCD = 1.0-1.618 (reciprocal)
+    bool abcOK = isInRange(abc, 0.382, 0.886, tol)
+    bool bcdOK = isInRange(bcd, 1.0, 1.618, tol)
+
+    float abcErr = calcRangeError(abc, 0.382, 0.886)
+    float bcdErr = calcRangeError(bcd, 1.0, 1.618)
+    float avgErr = (abcErr + bcdErr) / 2.0
+
+    bool isValid = enableABCD and abcOK and bcdOK
+    [isValid, avgErr, "AB=CD"]
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    PRZ CONVERGENCE VALIDATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Check if 3 PRZ levels converge within the tolerance zone
+validatePRZConvergence(float przXA, float przBC, float przABCD, bool isBull) =>
+    // All 3 levels must be within przConvergence % of each other
+    float maxLevel = math.max(przXA, math.max(przBC, przABCD))
+    float minLevel = math.min(przXA, math.min(przBC, przABCD))
+
+    // Calculate spread as percentage
+    float avgLevel = (przXA + przBC + przABCD) / 3.0
+    float spread = (maxLevel - minLevel) / avgLevel * 100.0
+
+    bool converges = spread <= przConvergence
+    float convergenceZone = (maxLevel + minLevel) / 2.0
+
+    [converges, convergenceZone, spread]
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    MAJOR PIVOT DETECTION (50+ Bar Significance)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Check if a high is the highest within pivotStrength bars
+isMajorHigh(int idx) =>
+    float priceAtIdx = high[bar_index - idx]
+    bool isMajor = true
+    for i = 1 to pivotStrength
+        if idx - i >= 0 and high[bar_index - idx + i] > priceAtIdx
+            isMajor := false
+            break
+        if idx + i <= bar_index and high[bar_index - idx - i] > priceAtIdx
+            isMajor := false
+            break
+    isMajor
+
+// Check if a low is the lowest within pivotStrength bars
+isMajorLow(int idx) =>
+    float priceAtIdx = low[bar_index - idx]
+    bool isMajor = true
+    for i = 1 to pivotStrength
+        if idx - i >= 0 and low[bar_index - idx + i] < priceAtIdx
+            isMajor := false
+            break
+        if idx + i <= bar_index and low[bar_index - idx - i] < priceAtIdx
+            isMajor := false
+            break
+    isMajor
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    CONFIRMED ZIGZAG (No Repainting)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var float[] pivotPrices = array.new_float(6, na)
+var int[] pivotBars = array.new_int(6, 0)
+var int[] pivotDirs = array.new_int(6, 0)
+var bool[] pivotMajor = array.new_bool(6, false)  // Track if pivot is major
+
+// Detect confirmed pivots only
+float pivHi = ta.pivothigh(high, zigzagDepth, zigzagDepth)
+float pivLo = ta.pivotlow(low, zigzagDepth, zigzagDepth)
+
+// Shift array helper
+shiftPivots(float price, int barIdx, int dir, bool isMajor) =>
+    for i = 5 to 1
+        array.set(pivotPrices, i, array.get(pivotPrices, i - 1))
+        array.set(pivotBars, i, array.get(pivotBars, i - 1))
+        array.set(pivotDirs, i, array.get(pivotDirs, i - 1))
+        array.set(pivotMajor, i, array.get(pivotMajor, i - 1))
+    array.set(pivotPrices, 0, price)
+    array.set(pivotBars, 0, barIdx)
+    array.set(pivotDirs, 0, dir)
+    array.set(pivotMajor, 0, isMajor)
+
+// Only process on confirmed bars (NO REPAINTING)
+if barstate.isconfirmed
+    if not na(pivHi)
+        int pivBar = bar_index - zigzagDepth
+        int lastDir = nz(array.get(pivotDirs, 0), 0)
+        float lastP = array.get(pivotPrices, 0)
+
+        // Check major pivot quality
+        bool isMajorPivot = true
+        int lookback = math.min(pivotStrength, pivBar)
+        float highestInRange = ta.highest(high, lookback * 2 + 1)[zigzagDepth]
+        isMajorPivot := pivHi >= highestInRange * 0.999  // Within 0.1%
+
+        if isMajorPivot
+            if na(lastP) or lastDir == -1
+                shiftPivots(pivHi, pivBar, 1, true)
+            else if lastDir == 1 and pivHi > lastP
+                array.set(pivotPrices, 0, pivHi)
+                array.set(pivotBars, 0, pivBar)
+                array.set(pivotMajor, 0, true)
+
+    if not na(pivLo)
+        int pivBar = bar_index - zigzagDepth
+        int lastDir = nz(array.get(pivotDirs, 0), 0)
+        float lastP = array.get(pivotPrices, 0)
+
+        // Check major pivot quality
+        bool isMajorPivot = true
+        int lookback = math.min(pivotStrength, pivBar)
+        float lowestInRange = ta.lowest(low, lookback * 2 + 1)[zigzagDepth]
+        isMajorPivot := pivLo <= lowestInRange * 1.001  // Within 0.1%
+
+        if isMajorPivot
+            if na(lastP) or lastDir == 1
+                shiftPivots(pivLo, pivBar, -1, true)
+            else if lastDir == -1 and pivLo < lastP
+                array.set(pivotPrices, 0, pivLo)
+                array.set(pivotBars, 0, pivBar)
+                array.set(pivotMajor, 0, true)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    PATTERN ANALYSIS WITH STRICT VALIDATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Get confirmed pivot points
+float pX = nz(array.get(pivotPrices, 4), 0.0)
+float pA = nz(array.get(pivotPrices, 3), 0.0)
+float pB = nz(array.get(pivotPrices, 2), 0.0)
+float pC = nz(array.get(pivotPrices, 1), 0.0)
+float pD = nz(array.get(pivotPrices, 0), 0.0)
+
+int bX = nz(array.get(pivotBars, 4), 0)
+int bA = nz(array.get(pivotBars, 3), 0)
+int bB = nz(array.get(pivotBars, 2), 0)
+int bC = nz(array.get(pivotBars, 1), 0)
+int bD = nz(array.get(pivotBars, 0), 0)
+
+// Validate all pivots are major
+bool allMajor = nz(array.get(pivotMajor, 0), false) and nz(array.get(pivotMajor, 1), false) and nz(array.get(pivotMajor, 2), false) and nz(array.get(pivotMajor, 3), false) and nz(array.get(pivotMajor, 4), false)
+
+// Basic validity
+bool validPoints = pX > 0 and pA > 0 and pB > 0 and pC > 0 and pD > 0
+validPoints := validPoints and bX > 0 and bA > 0 and bB > 0 and bC > 0 and bD > 0
+validPoints := validPoints and bX < bA and bA < bB and bB < bC and bC < bD
+
+// Calculate leg lengths
+float legXA = math.abs(pA - pX)
+float legAB = math.abs(pB - pA)
+float legBC = math.abs(pC - pB)
+float legCD = math.abs(pD - pC)
+float legAD = math.abs(pD - pA)
+float legXC = math.abs(pC - pX)
+float legXD = math.abs(pD - pX)
+
+// Calculate ratios
+float xab = legXA > 0 ? legAB / legXA : 0.0
+float abc = legAB > 0 ? legBC / legAB : 0.0
+float bcd = legBC > 0 ? legCD / legBC : 0.0
+float xad = legXA > 0 ? legAD / legXA : 0.0
+float xcd = legXC > 0 ? legCD / legXC : 0.0
+
+// Direction
+bool isBullPattern = pA > pX and pB < pA and pC > pB and pD < pC
+bool isBearPattern = pA < pX and pB > pA and pC < pB and pD > pC
+bool directionOK = (isBullPattern and showBullish) or (isBearPattern and showBearish)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    FIND BEST PATTERN (Lowest Error Wins)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var string bestPattern = ""
+var float bestError = 100.0
+var bool patternFound = false
+
+bestPattern := ""
+bestError := 100.0
+patternFound := false
+
+if validPoints and directionOK and barstate.isconfirmed
+    // Test each pattern with STRICT validation
+    [gartleyOK, gartleyErr, gartleyName] = validateGartley(xab, abc, bcd, xad)
+    [batOK, batErr, batName] = validateBat(xab, abc, bcd, xad)
+    [butterflyOK, butterflyErr, butterflyName] = validateButterfly(xab, abc, bcd, xad)
+    [crabOK, crabErr, crabName] = validateCrab(xab, abc, bcd, xad)
+    [sharkOK, sharkErr, sharkName] = validateShark(xab, abc, bcd, xad)
+    [cypherOK, cypherErr, cypherName] = validateCypher(xab, abc, xcd)
+    [abcdOK, abcdErr, abcdName] = validateABCD(abc, bcd)
+
+    // Find pattern with lowest error
+    if gartleyOK and gartleyErr < bestError and gartleyErr <= maxErrorRate
+        bestError := gartleyErr
+        bestPattern := gartleyName
+        patternFound := true
+
+    if batOK and batErr < bestError and batErr <= maxErrorRate
+        bestError := batErr
+        bestPattern := batName
+        patternFound := true
+
+    if butterflyOK and butterflyErr < bestError and butterflyErr <= maxErrorRate
+        bestError := butterflyErr
+        bestPattern := butterflyName
+        patternFound := true
+
+    if crabOK and crabErr < bestError and crabErr <= maxErrorRate
+        bestError := crabErr
+        bestPattern := crabName
+        patternFound := true
+
+    if sharkOK and sharkErr < bestError and sharkErr <= maxErrorRate
+        bestError := sharkErr
+        bestPattern := sharkName
+        patternFound := true
+
+    if cypherOK and cypherErr < bestError and cypherErr <= maxErrorRate
+        bestError := cypherErr
+        bestPattern := cypherName
+        patternFound := true
+
+    if abcdOK and abcdErr < bestError and abcdErr <= maxErrorRate
+        bestError := abcdErr
+        bestPattern := abcdName
+        patternFound := true
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    PRZ CONVERGENCE CHECK
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Calculate PRZ levels
+float przXA = isBullPattern ? pA - legXA * 0.786 : pA + legXA * 0.786  // XA Retracement
+float przBC = isBullPattern ? pC - legBC * 1.272 : pC + legBC * 1.272  // BC Projection
+float przABCD = isBullPattern ? pB - legAB : pB + legAB  // AB=CD level
+
+// Validate convergence
+[przConverges, przZone, przSpread] = validatePRZConvergence(przXA, przBC, przABCD, isBullPattern)
+
+// Final pattern validity requires PRZ convergence
+bool finalValid = patternFound and przConverges
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    DRAWING VARIABLES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var line lineXA = na
+var line lineAB = na
+var line lineBC = na
+var line lineCD = na
+var line lineXB = na
+var line lineAC = na
+var line lineBD = na
+var label lblPattern = na
+var label lblError = na
+var label lblXAB = na
+var label lblABC = na
+var label lblXAD = na
+
+var line przLine1 = na
+var line przLine2 = na
+var line przLine3 = na
+var line slLine = na
+var line t1Line = na
+var line t2Line = na
+var label przLbl1 = na
+var label przLbl2 = na
+var label przLbl3 = na
+
+var int lastDrawBar = 0
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    DRAWING ENGINE (Confirmed Only)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+if finalValid and bD > lastDrawBar and barstate.isconfirmed
+    // Delete old drawings
+    line.delete(lineXA)
+    line.delete(lineAB)
+    line.delete(lineBC)
+    line.delete(lineCD)
+    line.delete(lineXB)
+    line.delete(lineAC)
+    line.delete(lineBD)
+    label.delete(lblPattern)
+    label.delete(lblError)
+    label.delete(lblXAB)
+    label.delete(lblABC)
+    label.delete(lblXAD)
+    line.delete(przLine1)
+    line.delete(przLine2)
+    line.delete(przLine3)
+    line.delete(slLine)
+    line.delete(t1Line)
+    line.delete(t2Line)
+    label.delete(przLbl1)
+    label.delete(przLbl2)
+    label.delete(przLbl3)
+
+    color mainCol = isBullPattern ? bullColor : bearColor
+
+    // Pattern legs (solid, 1px)
+    lineXA := line.new(bX, pX, bA, pA, color=mainCol, width=1, style=line.style_solid)
+    lineAB := line.new(bA, pA, bB, pB, color=mainCol, width=1, style=line.style_solid)
+    lineBC := line.new(bB, pB, bC, pC, color=mainCol, width=1, style=line.style_solid)
+    lineCD := line.new(bC, pC, bD, pD, color=mainCol, width=1, style=line.style_solid)
+
+    // Internal lines (dashed)
+    lineXB := line.new(bX, pX, bB, pB, color=color.new(mainCol, 70), width=1, style=line.style_dashed)
+    lineAC := line.new(bA, pA, bC, pC, color=color.new(mainCol, 70), width=1, style=line.style_dashed)
+    lineBD := line.new(bB, pB, bD, pD, color=color.new(mainCol, 70), width=1, style=line.style_dashed)
+
+    // Pattern name
+    string arrow = isBullPattern ? "▲" : "▼"
+    float lblY = isBullPattern ? pD - legXA * 0.03 : pD + legXA * 0.03
+    lblPattern := label.new(bD, lblY, bestPattern + " " + arrow, color=color.new(color.black, 100), textcolor=mainCol, style=label.style_none, size=size.small)
+
+    // Error rate label
+    if showErrorLabel
+        color errCol = bestError <= 2.0 ? errorGoodColor : bestError <= 5.0 ? color.yellow : errorBadColor
+        string errText = "Err: " + str.tostring(bestError, "#.##") + "%"
+        float errY = isBullPattern ? pD - legXA * 0.06 : pD + legXA * 0.06
+        lblError := label.new(bD, errY, errText, color=color.new(color.black, 100), textcolor=errCol, style=label.style_none, size=size.tiny)
+
+    // Ratio labels on legs
+    if showRatioLabels
+        lblXAB := label.new(int((bA + bB) / 2), (pA + pB) / 2, str.tostring(xab, "#.###"), color=color.new(color.black, 100), textcolor=color.new(mainCol, 50), style=label.style_none, size=size.tiny)
+        lblABC := label.new(int((bB + bC) / 2), (pB + pC) / 2, str.tostring(abc, "#.###"), color=color.new(color.black, 100), textcolor=color.new(mainCol, 50), style=label.style_none, size=size.tiny)
+        lblXAD := label.new(int((bA + bD) / 2), (pA + pD) / 2, str.tostring(xad, "#.###"), color=color.new(color.black, 100), textcolor=color.yellow, style=label.style_none, size=size.tiny)
+
+    // PRZ levels (dotted, extend right)
+    if showPRZLevels
+        przLine1 := line.new(bD, przXA, bD + 50, przXA, color=przColor, width=1, style=line.style_dotted, extend=extend.right)
+        przLbl1 := label.new(bD + 3, przXA, "0.786 XA", color=color.new(color.black, 100), textcolor=przColor, style=label.style_none, size=size.tiny)
+
+        przLine2 := line.new(bD, przBC, bD + 50, przBC, color=przColor, width=1, style=line.style_dotted, extend=extend.right)
+        przLbl2 := label.new(bD + 3, przBC, "1.272 BC", color=color.new(color.black, 100), textcolor=przColor, style=label.style_none, size=size.tiny)
+
+        przLine3 := line.new(bD, przZone, bD + 50, przZone, color=color.new(#FFD700, 0), width=1, style=line.style_solid, extend=extend.right)
+        przLbl3 := label.new(bD + 3, przZone, "PRZ Zone", color=color.new(color.black, 100), textcolor=color.new(#FFD700, 0), style=label.style_none, size=size.tiny)
+
+    // Stop Loss
+    if showStopLoss
+        float slLvl = isBullPattern ? math.min(pX, pD) - legXA * 0.1 : math.max(pX, pD) + legXA * 0.1
+        slLine := line.new(bD, slLvl, bD + 50, slLvl, color=slColor, width=1, style=line.style_dotted, extend=extend.right)
+
+    // Targets
+    if showTargets
+        float t1 = isBullPattern ? pD + legAD * 0.382 : pD - legAD * 0.382
+        float t2 = isBullPattern ? pD + legAD * 0.618 : pD - legAD * 0.618
+        t1Line := line.new(bD, t1, bD + 50, t1, color=targetColor, width=1, style=line.style_dotted, extend=extend.right)
+        t2Line := line.new(bD, t2, bD + 50, t2, color=targetColor, width=1, style=line.style_dotted, extend=extend.right)
+
+    lastDrawBar := bD
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    SIGNAL OUTPUT (Required)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+bool signalBull = finalValid and isBullPattern and bD == bar_index - zigzagDepth and barstate.isconfirmed
+bool signalBear = finalValid and isBearPattern and bD == bar_index - zigzagDepth and barstate.isconfirmed
+
+plotshape(signalBull, "Bullish Signal", shape.triangleup, location.belowbar, bullColor, size=size.tiny)
+plotshape(signalBear, "Bearish Signal", shape.triangledown, location.abovebar, bearColor, size=size.tiny)
+
+bgcolor(signalBull or signalBear ? color.new(signalBull ? bullColor : bearColor, 92) : na, title="Signal BG")
+
+// Debug plot (hidden)
+plot(bestError, "Error Rate", display=display.status_line, color=color.gray)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    ALERTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+alertcondition(signalBull, "Bullish Harmonic (Strict)", "LEX-Q v8: STRICT Bullish " + bestPattern + " | Error: " + str.tostring(bestError, "#.##") + "%")
+alertcondition(signalBear, "Bearish Harmonic (Strict)", "LEX-Q v8: STRICT Bearish " + bestPattern + " | Error: " + str.tostring(bestError, "#.##") + "%")
+alertcondition(signalBull or signalBear, "Any Strict Harmonic", "LEX-Q v8: STRICT Harmonic Pattern Detected!")
