@@ -1,0 +1,507 @@
+//@version=5
+indicator("LEX-Q Harmonic Pro v7.0 Dynamic", shorttitle="LEX-Q HP v7", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ╔══════════════════════════════════════════════════════════════════════════════╗
+// ║                    LEX-Q HARMONIC PATTERN INDICATOR v7.0                     ║
+// ║                      Dynamic Real-time Edition                               ║
+// ║                                                                              ║
+// ║  FEATURES:                                                                   ║
+// ║  • Real-time ZigZag - Live projection leg follows price                     ║
+// ║  • Neon Wireframe Style - Clean cyan/red on dark background                 ║
+// ║  • Dynamic PRZ Levels - Extend right, trim on price touch                   ║
+// ║  • Minimalist Design - No clutter, pattern name only                        ║
+// ╚══════════════════════════════════════════════════════════════════════════════╝
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              INPUTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+string grp1 = "══════ Pattern Selection ══════"
+bool enableGartley = input.bool(true, "Gartley", group=grp1, inline="p1")
+bool enableBat = input.bool(true, "Bat", group=grp1, inline="p1")
+bool enableButterfly = input.bool(true, "Butterfly", group=grp1, inline="p2")
+bool enableCrab = input.bool(true, "Crab", group=grp1, inline="p2")
+bool enableShark = input.bool(true, "Shark", group=grp1, inline="p3")
+bool enableCypher = input.bool(true, "Cypher", group=grp1, inline="p3")
+bool enableABCD = input.bool(true, "AB=CD", group=grp1, inline="p4")
+
+string grp2 = "══════ Direction Filter ══════"
+bool showBullish = input.bool(true, "Bullish", group=grp2, inline="dir")
+bool showBearish = input.bool(true, "Bearish", group=grp2, inline="dir")
+
+string grp3 = "══════ ZigZag Settings ══════"
+int zigzagDepth = input.int(12, "ZigZag Depth", minval=3, maxval=50, group=grp3, tooltip="Lower = more patterns, Higher = major patterns only")
+float minAccuracy = input.float(85.0, "Min Pattern Accuracy %", minval=70.0, maxval=99.0, step=1.0, group=grp3)
+
+string grp4 = "══════ Visual Settings ══════"
+bool showPRZLevels = input.bool(true, "Show PRZ Levels", group=grp4)
+bool showTargets = input.bool(true, "Show Targets (T1, T2)", group=grp4)
+bool showStopLoss = input.bool(true, "Show Stop Loss", group=grp4)
+
+// Neon Colors - Fixed
+color bullColor = color.new(#00E5FF, 0)  // Neon Cyan
+color bearColor = color.new(#FF5252, 0)  // Neon Red
+color przColor = color.new(#B388FF, 0)   // Neon Purple for PRZ
+color targetColor = color.new(#69F0AE, 0) // Neon Green for targets
+color slColor = color.new(#FF5252, 30)   // Soft red for stop loss
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    SCOTT CARNEY RATIO SCORING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+calcRatioError(float actual, float target) =>
+    math.abs(actual - target) / target * 100.0
+
+calcRangeError(float actual, float minVal, float maxVal) =>
+    float mid = (minVal + maxVal) / 2.0
+    float halfRange = (maxVal - minVal) / 2.0
+    float dist = math.abs(actual - mid)
+    dist > halfRange ? (dist - halfRange) / mid * 100.0 : 0.0
+
+calcPatternScore(string patternName, float xab, float abc, float bcd, float xad) =>
+    float totalError = 0.0
+    int checks = 0
+
+    if patternName == "Gartley"
+        totalError := calcRatioError(xab, 0.618) + calcRangeError(abc, 0.382, 0.886) + calcRatioError(xad, 0.786)
+        checks := 3
+    else if patternName == "Bat"
+        totalError := calcRangeError(xab, 0.382, 0.5) + calcRangeError(abc, 0.382, 0.886) + calcRatioError(xad, 0.886)
+        checks := 3
+    else if patternName == "Butterfly"
+        totalError := calcRatioError(xab, 0.786) + calcRangeError(abc, 0.382, 0.886) + calcRangeError(xad, 1.27, 1.618)
+        checks := 3
+    else if patternName == "Crab"
+        totalError := calcRangeError(xab, 0.382, 0.618) + calcRangeError(abc, 0.382, 0.886) + calcRatioError(xad, 1.618)
+        checks := 3
+    else if patternName == "Shark"
+        totalError := calcRangeError(xab, 0.382, 0.618) + calcRangeError(abc, 1.13, 1.618) + calcRangeError(xad, 0.886, 1.13)
+        checks := 3
+    else if patternName == "Cypher"
+        totalError := calcRangeError(xab, 0.382, 0.618) + calcRangeError(abc, 1.13, 1.414)
+        checks := 2
+    else if patternName == "AB=CD"
+        totalError := calcRangeError(abc, 0.382, 0.886) + calcRangeError(bcd, 1.0, 1.618)
+        checks := 2
+
+    float avgError = checks > 0 ? totalError / checks : 100.0
+    float score = math.max(0.0, 100.0 - avgError * 5.0)
+    score
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                         PATTERN DETECTION FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+isGartley(float xab, float abc, float xad, float tol) =>
+    enableGartley and math.abs(xab - 0.618) <= tol and abc >= 0.382 - tol and abc <= 0.886 + tol and math.abs(xad - 0.786) <= tol
+
+isBat(float xab, float abc, float xad, float tol) =>
+    enableBat and xab >= 0.382 - tol and xab <= 0.5 + tol and abc >= 0.382 - tol and abc <= 0.886 + tol and math.abs(xad - 0.886) <= tol
+
+isButterfly(float xab, float abc, float xad, float tol) =>
+    enableButterfly and math.abs(xab - 0.786) <= tol and abc >= 0.382 - tol and abc <= 0.886 + tol and xad >= 1.27 - tol and xad <= 1.618 + tol
+
+isCrab(float xab, float abc, float xad, float tol) =>
+    enableCrab and xab >= 0.382 - tol and xab <= 0.618 + tol and abc >= 0.382 - tol and abc <= 0.886 + tol and math.abs(xad - 1.618) <= tol * 1.5
+
+isShark(float xab, float abc, float xad, float tol) =>
+    enableShark and xab >= 0.382 - tol and xab <= 0.618 + tol and abc >= 1.13 - tol and abc <= 1.618 + tol and xad >= 0.886 - tol and xad <= 1.13 + tol
+
+isCypher(float xab, float abc, float xcd, float tol) =>
+    enableCypher and xab >= 0.382 - tol and xab <= 0.618 + tol and math.abs(xcd - 0.786) <= tol
+
+isABCD(float abc, float cdab, float tol) =>
+    enableABCD and abc >= 0.382 - tol and abc <= 0.886 + tol and cdab >= 1.0 - tol and cdab <= 1.618 + tol
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    REAL-TIME DYNAMIC ZIGZAG ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Pivot arrays - stores confirmed pivots
+var float[] pivotPrices = array.new_float(6, na)
+var int[] pivotBars = array.new_int(6, 0)
+var int[] pivotDirs = array.new_int(6, 0)  // 1 = high, -1 = low
+
+// Last confirmed pivot tracking
+var float lastConfirmedHigh = na
+var int lastConfirmedHighBar = 0
+var float lastConfirmedLow = na
+var int lastConfirmedLowBar = 0
+
+// Current swing tracking (real-time, not confirmed)
+var float currentSwingHigh = na
+var int currentSwingHighBar = 0
+var float currentSwingLow = na
+var int currentSwingLowBar = 0
+var int lastDirection = 0  // 1 = looking for low after high, -1 = looking for high after low
+
+// Detect pivots using lookback
+float pivHi = ta.pivothigh(high, zigzagDepth, zigzagDepth)
+float pivLo = ta.pivotlow(low, zigzagDepth, zigzagDepth)
+
+// Shift pivots array helper
+shiftPivots(float price, int barIdx, int dir) =>
+    for i = 5 to 1
+        array.set(pivotPrices, i, array.get(pivotPrices, i - 1))
+        array.set(pivotBars, i, array.get(pivotBars, i - 1))
+        array.set(pivotDirs, i, array.get(pivotDirs, i - 1))
+    array.set(pivotPrices, 0, price)
+    array.set(pivotBars, 0, barIdx)
+    array.set(pivotDirs, 0, dir)
+
+// Update confirmed pivots (these never change once set)
+if not na(pivHi)
+    int pivBar = bar_index - zigzagDepth
+    int lastDir = nz(array.get(pivotDirs, 0), 0)
+    float lastP = array.get(pivotPrices, 0)
+
+    if na(lastP) or lastDir == -1
+        shiftPivots(pivHi, pivBar, 1)
+        lastConfirmedHigh := pivHi
+        lastConfirmedHighBar := pivBar
+        lastDirection := 1
+    else if lastDir == 1 and pivHi > lastP
+        array.set(pivotPrices, 0, pivHi)
+        array.set(pivotBars, 0, pivBar)
+        lastConfirmedHigh := pivHi
+        lastConfirmedHighBar := pivBar
+
+if not na(pivLo)
+    int pivBar = bar_index - zigzagDepth
+    int lastDir = nz(array.get(pivotDirs, 0), 0)
+    float lastP = array.get(pivotPrices, 0)
+
+    if na(lastP) or lastDir == 1
+        shiftPivots(pivLo, pivBar, -1)
+        lastConfirmedLow := pivLo
+        lastConfirmedLowBar := pivBar
+        lastDirection := -1
+    else if lastDir == -1 and pivLo < lastP
+        array.set(pivotPrices, 0, pivLo)
+        array.set(pivotBars, 0, pivBar)
+        lastConfirmedLow := pivLo
+        lastConfirmedLowBar := pivBar
+
+// Real-time swing tracking (projection leg)
+if lastDirection == 1  // After a high, looking for low
+    if na(currentSwingLow) or low < currentSwingLow
+        currentSwingLow := low
+        currentSwingLowBar := bar_index
+    if high > nz(lastConfirmedHigh, high)
+        currentSwingHigh := high
+        currentSwingHighBar := bar_index
+else if lastDirection == -1  // After a low, looking for high
+    if na(currentSwingHigh) or high > currentSwingHigh
+        currentSwingHigh := high
+        currentSwingHighBar := bar_index
+    if low < nz(lastConfirmedLow, low)
+        currentSwingLow := low
+        currentSwingLowBar := bar_index
+
+// Reset swing trackers when new pivot is confirmed
+if not na(pivHi) or not na(pivLo)
+    currentSwingHigh := na
+    currentSwingLow := na
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                         PATTERN ANALYSIS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Get pivot points for pattern analysis
+float pX = nz(array.get(pivotPrices, 4), 0.0)
+float pA = nz(array.get(pivotPrices, 3), 0.0)
+float pB = nz(array.get(pivotPrices, 2), 0.0)
+float pC = nz(array.get(pivotPrices, 1), 0.0)
+float pDconfirmed = nz(array.get(pivotPrices, 0), 0.0)
+
+int bX = nz(array.get(pivotBars, 4), 0)
+int bA = nz(array.get(pivotBars, 3), 0)
+int bB = nz(array.get(pivotBars, 2), 0)
+int bC = nz(array.get(pivotBars, 1), 0)
+int bDconfirmed = nz(array.get(pivotBars, 0), 0)
+
+// Dynamic D point - use real-time price for projection
+int lastPivotDir = nz(array.get(pivotDirs, 0), 0)
+float pD = pDconfirmed
+int bD = bDconfirmed
+
+// For live projection: if we have a current swing, use it
+if lastPivotDir == 1 and not na(currentSwingLow)
+    pD := currentSwingLow
+    bD := currentSwingLowBar
+else if lastPivotDir == -1 and not na(currentSwingHigh)
+    pD := currentSwingHigh
+    bD := currentSwingHighBar
+
+// Validate pattern points
+bool validPoints = pX > 0 and pA > 0 and pB > 0 and pC > 0 and pD > 0
+validPoints := validPoints and bX > 0 and bA > 0 and bB > 0 and bC > 0 and bD > 0
+
+// Calculate ratios
+float legXA = math.abs(pA - pX)
+float legAB = math.abs(pB - pA)
+float legBC = math.abs(pC - pB)
+float legCD = math.abs(pD - pC)
+float legAD = math.abs(pD - pA)
+float legXC = math.abs(pC - pX)
+
+float xab = legXA > 0 ? legAB / legXA : 0.0
+float abc = legAB > 0 ? legBC / legAB : 0.0
+float bcd = legBC > 0 ? legCD / legBC : 0.0
+float xad = legXA > 0 ? legAD / legXA : 0.0
+float xcd = legXC > 0 ? legCD / legXC : 0.0
+float cdab = legAB > 0 ? legCD / legAB : 0.0
+
+// Direction check
+bool isBullPattern = pX < pA
+bool isBearPattern = pX > pA
+bool directionOK = (isBullPattern and showBullish) or (isBearPattern and showBearish)
+
+// Pattern detection
+string detectedPattern = ""
+float patternScore = 0.0
+float tol = 0.15  // Tolerance for ratio matching
+
+if validPoints and directionOK
+    if isGartley(xab, abc, xad, tol)
+        float s = calcPatternScore("Gartley", xab, abc, bcd, xad)
+        if s > patternScore
+            patternScore := s
+            detectedPattern := "Gartley"
+
+    if isBat(xab, abc, xad, tol)
+        float s = calcPatternScore("Bat", xab, abc, bcd, xad)
+        if s > patternScore
+            patternScore := s
+            detectedPattern := "Bat"
+
+    if isButterfly(xab, abc, xad, tol)
+        float s = calcPatternScore("Butterfly", xab, abc, bcd, xad)
+        if s > patternScore
+            patternScore := s
+            detectedPattern := "Butterfly"
+
+    if isCrab(xab, abc, xad, tol)
+        float s = calcPatternScore("Crab", xab, abc, bcd, xad)
+        if s > patternScore
+            patternScore := s
+            detectedPattern := "Crab"
+
+    if isShark(xab, abc, xad, tol)
+        float s = calcPatternScore("Shark", xab, abc, bcd, xad)
+        if s > patternScore
+            patternScore := s
+            detectedPattern := "Shark"
+
+    if isCypher(xab, abc, xcd, tol)
+        float s = calcPatternScore("Cypher", xab, abc, bcd, xad)
+        if s > patternScore
+            patternScore := s
+            detectedPattern := "Cypher"
+
+    if isABCD(abc, cdab, tol)
+        float s = calcPatternScore("AB=CD", xab, abc, bcd, xad)
+        if s > patternScore
+            patternScore := s
+            detectedPattern := "AB=CD"
+
+// Check minimum accuracy
+bool patternValid = detectedPattern != "" and patternScore >= minAccuracy
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                         DRAWING STORAGE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var line lineXA = na
+var line lineAB = na
+var line lineBC = na
+var line lineCD = na
+var line lineXB = na
+var line lineAC = na
+var line lineBD = na
+var label lblPattern = na
+
+var line przLine1 = na
+var line przLine2 = na
+var line slLine = na
+var line t1Line = na
+var line t2Line = na
+
+var label przLbl1 = na
+var label przLbl2 = na
+var label slLbl = na
+var label t1Lbl = na
+var label t2Lbl = na
+
+// PRZ touch tracking
+var bool prz1Touched = false
+var bool prz2Touched = false
+var bool slTouched = false
+var bool t1Touched = false
+var bool t2Touched = false
+var float prz1Level = na
+var float prz2Level = na
+var float slLevel = na
+var float t1Level = na
+var float t2Level = na
+
+// Last drawn pattern tracking
+var int lastPatternBar = 0
+var string lastPatternName = ""
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    DYNAMIC DRAWING ENGINE (Real-time Updates)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Clean previous drawings
+if barstate.isfirst
+    lineXA := na
+    lineAB := na
+    lineBC := na
+    lineCD := na
+    lineXB := na
+    lineAC := na
+    lineBD := na
+
+// Draw pattern if valid
+if patternValid
+    color mainCol = isBullPattern ? bullColor : bearColor
+
+    // Delete old lines
+    line.delete(lineXA)
+    line.delete(lineAB)
+    line.delete(lineBC)
+    line.delete(lineCD)
+    line.delete(lineXB)
+    line.delete(lineAC)
+    line.delete(lineBD)
+    label.delete(lblPattern)
+
+    // Main pattern lines (solid, 1px width)
+    lineXA := line.new(bX, pX, bA, pA, color=mainCol, width=1, style=line.style_solid)
+    lineAB := line.new(bA, pA, bB, pB, color=mainCol, width=1, style=line.style_solid)
+    lineBC := line.new(bB, pB, bC, pC, color=mainCol, width=1, style=line.style_solid)
+    lineCD := line.new(bC, pC, bD, pD, color=mainCol, width=1, style=line.style_solid)
+
+    // Internal connection lines (dashed, subtle)
+    lineXB := line.new(bX, pX, bB, pB, color=color.new(mainCol, 70), width=1, style=line.style_dashed)
+    lineAC := line.new(bA, pA, bC, pC, color=color.new(mainCol, 70), width=1, style=line.style_dashed)
+    lineBD := line.new(bB, pB, bD, pD, color=color.new(mainCol, 70), width=1, style=line.style_dashed)
+
+    // Pattern name label only (minimalist - tiny, no background)
+    string dirArrow = isBullPattern ? "▲" : "▼"
+    float lblOffset = math.abs(pA - pX) * 0.02
+    float lblY = isBullPattern ? pD - lblOffset : pD + lblOffset
+    lblPattern := label.new(bD, lblY, detectedPattern + " " + dirArrow, color=color.new(color.black, 100), textcolor=mainCol, style=label.style_none, size=size.tiny)
+
+    // Check if this is a new pattern
+    bool isNewPattern = bD > lastPatternBar or detectedPattern != lastPatternName
+
+    if isNewPattern
+        lastPatternBar := bD
+        lastPatternName := detectedPattern
+
+        // Reset touch tracking for new pattern
+        prz1Touched := false
+        prz2Touched := false
+        slTouched := false
+        t1Touched := false
+        t2Touched := false
+
+        // Calculate PRZ levels
+        prz1Level := isBullPattern ? pA - legXA * 0.786 : pA + legXA * 0.786
+        prz2Level := isBullPattern ? pC - legBC * 1.272 : pC + legBC * 1.272
+        slLevel := isBullPattern ? pD - math.abs(pD - pC) * 0.3 : pD + math.abs(pD - pC) * 0.3
+        t1Level := isBullPattern ? pD + legAD * 0.382 : pD - legAD * 0.382
+        t2Level := isBullPattern ? pD + legAD * 0.618 : pD - legAD * 0.618
+
+    // Delete old PRZ lines
+    line.delete(przLine1)
+    line.delete(przLine2)
+    line.delete(slLine)
+    line.delete(t1Line)
+    line.delete(t2Line)
+    label.delete(przLbl1)
+    label.delete(przLbl2)
+    label.delete(slLbl)
+    label.delete(t1Lbl)
+    label.delete(t2Lbl)
+
+    // Check if price touched levels (trim logic)
+    if not na(prz1Level)
+        if (isBullPattern and low <= prz1Level) or (not isBullPattern and high >= prz1Level)
+            prz1Touched := true
+    if not na(prz2Level)
+        if (isBullPattern and low <= prz2Level) or (not isBullPattern and high >= prz2Level)
+            prz2Touched := true
+    if not na(slLevel)
+        if (isBullPattern and low <= slLevel) or (not isBullPattern and high >= slLevel)
+            slTouched := true
+    if not na(t1Level)
+        if (isBullPattern and high >= t1Level) or (not isBullPattern and low <= t1Level)
+            t1Touched := true
+    if not na(t2Level)
+        if (isBullPattern and high >= t2Level) or (not isBullPattern and low <= t2Level)
+            t2Touched := true
+
+    // Draw PRZ levels (extend right until touched)
+    if showPRZLevels and not na(prz1Level)
+        int prz1End = prz1Touched ? bar_index : bar_index + 50
+        przLine1 := line.new(bD, prz1Level, prz1End, prz1Level, color=przColor, width=1, style=line.style_dotted, extend=prz1Touched ? extend.none : extend.right)
+        przLbl1 := label.new(bD + 2, prz1Level, "0.786 XA", color=color.new(color.black, 100), textcolor=przColor, style=label.style_none, size=size.tiny)
+
+    if showPRZLevels and not na(prz2Level)
+        int prz2End = prz2Touched ? bar_index : bar_index + 50
+        przLine2 := line.new(bD, prz2Level, prz2End, prz2Level, color=przColor, width=1, style=line.style_dotted, extend=prz2Touched ? extend.none : extend.right)
+        przLbl2 := label.new(bD + 2, prz2Level, "1.272 BC", color=color.new(color.black, 100), textcolor=przColor, style=label.style_none, size=size.tiny)
+
+    // Draw Stop Loss (extend right until touched)
+    if showStopLoss and not na(slLevel)
+        int slEnd = slTouched ? bar_index : bar_index + 50
+        slLine := line.new(bD, slLevel, slEnd, slLevel, color=slColor, width=1, style=line.style_dotted, extend=slTouched ? extend.none : extend.right)
+        slLbl := label.new(bD + 2, slLevel, "SL", color=color.new(color.black, 100), textcolor=slColor, style=label.style_none, size=size.tiny)
+
+    // Draw Targets (extend right until touched)
+    if showTargets and not na(t1Level)
+        int t1End = t1Touched ? bar_index : bar_index + 50
+        t1Line := line.new(bD, t1Level, t1End, t1Level, color=targetColor, width=1, style=line.style_dotted, extend=t1Touched ? extend.none : extend.right)
+        t1Lbl := label.new(bD + 2, t1Level, "T1", color=color.new(color.black, 100), textcolor=targetColor, style=label.style_none, size=size.tiny)
+
+    if showTargets and not na(t2Level)
+        int t2End = t2Touched ? bar_index : bar_index + 50
+        t2Line := line.new(bD, t2Level, t2End, t2Level, color=targetColor, width=1, style=line.style_dotted, extend=t2Touched ? extend.none : extend.right)
+        t2Lbl := label.new(bD + 2, t2Level, "T2", color=color.new(color.black, 100), textcolor=targetColor, style=label.style_none, size=size.tiny)
+
+// Update PRZ line endpoints dynamically when touched
+if not patternValid and lastPatternBar > 0
+    // Continue checking touches even when pattern drawing is not active
+    if not prz1Touched and not na(prz1Level)
+        if (lastPatternName != "" and ((isBullPattern and low <= prz1Level) or (not isBullPattern and high >= prz1Level)))
+            prz1Touched := true
+            if not na(przLine1)
+                line.set_x2(przLine1, bar_index)
+                line.set_extend(przLine1, extend.none)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                         SIGNAL OUTPUT (REQUIRED)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Signal detection - confirmed patterns only
+bool confirmedSignal = patternValid and barstate.isconfirmed and bD == bar_index - 1
+
+plotshape(confirmedSignal and isBullPattern, "Bullish Signal", shape.triangleup, location.belowbar, bullColor, size=size.tiny)
+plotshape(confirmedSignal and not isBullPattern, "Bearish Signal", shape.triangledown, location.abovebar, bearColor, size=size.tiny)
+
+// Background flash on signal
+bgcolor(confirmedSignal ? color.new(isBullPattern ? bullColor : bearColor, 90) : na, title="Signal Flash")
+
+// Dummy plot for script validation
+plot(na, "Hidden", display=display.none)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                         ALERTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+alertcondition(confirmedSignal and isBullPattern, "Bullish Harmonic", "LEX-Q: Bullish Harmonic Pattern Detected!")
+alertcondition(confirmedSignal and not isBullPattern, "Bearish Harmonic", "LEX-Q: Bearish Harmonic Pattern Detected!")
+alertcondition(confirmedSignal, "Any Harmonic", "LEX-Q: Harmonic Pattern Detected!")
